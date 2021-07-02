@@ -3,11 +3,14 @@
 import os
 import pandas as pd
 import geopandas as gpd
+from datetime import date
 
-EMP_METADATA = "emp_qiime_mapping_release1_20170912.tsv"
+import restapi_ebi
 
+EMP_METADATA = "emp_qiime_mapping_release1_20170912.csv"
+EBI_METADATA = "ebi_ena_soil_dataset"
 
-def import_gpframe(file_name):
+def import_gpframe(file_name, sep="\t", subsample=False):
     """ Import given csv/tsv file as geopandas geopandas dataframe. """
     SELECTED_COLS = ['#SampleID', 'BarcodeSequence', 'LinkerPrimerSequence', 'Description',
        'title', 'principal_investigator', 'doi',
@@ -19,13 +22,19 @@ def import_gpframe(file_name):
        'env_material', 'envo_biome_0', 'envo_biome_1', 'envo_biome_2',
        'envo_biome_3', 'envo_biome_4', 'envo_biome_5', 'empo_0', 'empo_1',
        'empo_2', 'empo_3']
-    df = pd.read_csv(file_name, sep="\t")
+    df = pd.read_csv(file_name, sep=sep)
+    if "std_country" in df.columns:
+        SELECTED_COLS.append("std_country")
     # we only want data with locations
     df = df.dropna(subset=["latitude_deg", "longitude_deg"])
-    # we do not need all columns (e.g. about host etc.)
-    df = df.loc[:, SELECTED_COLS]
+    # we do not need all columns of the EMP dataset (e.g. about host etc.)
+    if subsample: df = df.loc[:, SELECTED_COLS]
     # for later analysis gp_dataframes can be useful
-    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["latitude_deg"], df["longitude_deg"]))
+    gdf = gpd.GeoDataFrame(df, geometry=gpd.points_from_xy(df["longitude_deg"], df["latitude_deg"]))
+    # standardize the column of country by using the coordinates to assign countries
+    if "std_country" not in gdf.columns and "processed" not in file_name:
+        gdf = reassign_country(gdf)
+        gdf.to_csv(str(file_name).replace(".csv", "_processed.csv"))
     return gdf
 
 
@@ -37,7 +46,7 @@ def total_n_samples(gp_dataframe):
 
 def summarize_cntr_and_ftrs(gp_dataframe):
     """ Display sampling locations sorted by country with biome info """
-    smdf = gp_dataframe.groupby(["country", "latitude_deg", "longitude_deg"]).agg(
+    smdf = gp_dataframe.groupby(["std_country", "latitude_deg", "longitude_deg"]).agg(
         biome=pd.NamedAgg(column="env_biome", aggfunc=pd.unique),
         n_samples=pd.NamedAgg(column="env_biome", aggfunc="size"))
     return smdf
@@ -45,24 +54,57 @@ def summarize_cntr_and_ftrs(gp_dataframe):
 
 def subset_for_soil():
     """ Make a subset only containing soil samples """
-    global sdf
+    global emp_sdf
     QUERY = "soil" #  "soil|rhizosphere"
-    sdf = df[(
-        df["env_feature"].str.contains(QUERY, regex=True) |
-        df["env_material"].str.contains(QUERY, regex=True)
+    emp_sdf = emp_df[(
+        emp_df["env_feature"].str.contains(QUERY, regex=True) |
+        emp_df["env_material"].str.contains(QUERY, regex=True)
     )]
-    sdf = sdf.dropna(subset=["latitude_deg", "longitude_deg"])
+    emp_sdf = emp_sdf.dropna(subset=["latitude_deg", "longitude_deg"])
+    return
+
+def subset_for_coordprec(i_df):
+    """ Make a subset only containing samples with precise coordinates."""
+    i_df = i_df.dropna(subset=["latitude_deg", "longitude_deg"])
+    return i_df[
+            i_df["latitude_deg"].apply(
+                filter_low_resolution) & i_df["longitude_deg"].apply(
+                    filter_low_resolution)]
+
+
+def subset_for_countries(i_df):
+    """ Make a subset only containing samples from USA and Canada."""
+    QUERY = "United States|Canada" #  "soil|rhizosphere"
+    i_df = i_df[i_df["countries"].str.contains(QUERY, regex=True)]
     return
 
 
-def subset_for_countries():
-    """ Make a subset only containing sampes from USA and Canada """
-    QUERY = "United States|Canada" #  "soil|rhizosphere"
-    cdf = df[df["countries"].str.contains(QUERY, regex=True)]
+def reassign_country(gpd_df):
+    """Assign country to each sample by comparing coordinates to world countries shape file."""
+    country_file = os.path.join(data_dir, "TM_WORLD_BORDERS-0.3/TM_WORLD_BORDERS-0.3.shp")
+    shapes = gpd.read_file(country_file)
+    gpd_df["std_country"] = ["NaN"]*gpd_df.shape[0]
+    for i, geom in gpd_df.geometry.items():
+        for j, shape in shapes.iterrows():
+            if geom.within(shape.geometry):
+                gpd_df.loc[i, "std_country"] = shape.NAME
+                break
+    return gpd_df
+
+
+def overall_env_features(gp_dataframe):
+    """ Print all different environmental/sample features."""
+    print("--- Biomes ---")
+    print(gp_dataframe.env_biome.value_counts())
+    print("\n--- Material ---")
+    print(gp_dataframe.env_material.value_counts())
+    print("\n--- Features ---")
+    print(gp_dataframe.env_feature.value_counts())
     return
 
 
 def map_the_data(gp_dataframe):
+    """Plot the distribution of all datasamples on interactive map."""
     import folium
     FOL_COLS = ['darkred', 'white', 'cadetblue', 'pink', 'red', 'gray',
             'darkgreen', 'green', 'black', 'lightred', 'blue', 'beige',
@@ -89,25 +131,77 @@ def map_the_data(gp_dataframe):
     return mp
 
 
+def load_ebi_data():
+    """Download the metadata from ebi m,etagenomics soil samples."""
+    if any(EBI_METADATA in ds for ds in os.listdir(data_dir)):
+        if ask_for_ebi_reload():
+            restapi_ebi.run(os.path.join(data_dir, f"{EBI_METADATA}_{date.today().strftime('%Y_%m_%d')}.csv"))
+    else:
+        restapi_ebi.run(os.path.join(data_dir, f"{EBI_METADATA}_{date.today().strftime('%Y_%m_%d')}.csv"))
+    return 
+
+
+def ask_for_ebi_reload():
+    """Get user input to decide if ENA metadata set should be reloaded."""
+    CHOICES = {"y": True, "n": False}
+    while(True):
+        answer = input("Do you want to reload the metadata from EBI database? [y/n]")
+        for ans, choice in CHOICES.items():
+            if answer.lower() == ans:
+                return choice
+        print(f"Please enter 'y' or 'n', not {answer}. Retry ...")
+    return
+
+
+def import_ebi():
+    """Import and globally store ebi metadata set from latest download."""
+    ebi_metapostfix = sorted([ds for ds in os.listdir(data_dir) if EBI_METADATA in ds])[-1]
+    ebi_metafile = os.path.join(data_dir, ebi_metapostfix)
+    global ebi_df
+    ebi_df = import_gpframe(ebi_metafile, sep=",")
+    return
+
+
+def filter_low_resolution(coordinate, sign_figures = 3):
+    """Filter dataset by resolution of coordinates."""
+    return round(coordinate, sign_figures-1) - coordinate != 0
+
+
+def dist_between_coord(point1, point2):
+    """Illustrate distance between two coordinates by applying haversines formula."""
+    from haversine import haversine
+    distance = haversine(point1[0], point1[1], point2[0], point2[1])
+    print("The points [", point1[1], "°N,", point1[0],
+            "°E ] and [", point2[1], "°N,", point2[0], "°E ] have a distance of:")
+    print(round(distance*1000, 2), "m")
+    return
+
 
 def main():
-    pd.options.display.max_rows = 999
+    pd.options.display.max_rows = 9999
 
+    global parent_dir, data_dir
     parent_dir = os.path.dirname(os.getcwd())
-    emp_metafile = os.path.join(parent_dir, "data", EMP_METADATA)
-    global df
-    df = import_gpframe(emp_metafile)    
+    data_dir = os.path.join(parent_dir, "data")
+    
+    # import emp meta dataset
+    if os.path.exists(os.path.join(data_dir, EMP_METADATA.replace(".csv", "_processed.csv"))):
+        emp_metafile = os.path.join(data_dir, EMP_METADATA.replace(".csv", "_processed.csv"))
+        sep = ","
+    else:
+        emp_metafile = os.path.join(data_dir, EMP_METADATA)
+        sep = ","
+    global emp_df
+    emp_df = import_gpframe(emp_metafile, sep=sep, subsample=True)
+    
+    # import latest ena ebi metagenomica dataset
+    if any(EBI_METADATA in ds for ds in os.listdir(data_dir)):
+        ebi_metapostfix = sorted([ds for ds in os.listdir(data_dir) if EBI_METADATA in ds])[-1]
+        ebi_metafile = os.path.join(data_dir, ebi_metapostfix)
+        global ebi_df
+        ebi_df = import_gpframe(ebi_metafile, sep=",")
     return
 
 
-def overall_env_features(gp_dataframe):
-    """ Print all different environmental/sample features """
-    print("--- Biomes ---")
-    print(gp_dataframe.env_biome.value_counts())
-    print("\n--- Material ---")
-    print(gp_dataframe.env_material.value_counts())
-    print("\n--- Features ---")
-    print(gp_dataframe.env_feature.value_counts())
-    return
-
+# RUN
 main()
