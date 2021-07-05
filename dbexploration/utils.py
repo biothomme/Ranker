@@ -114,8 +114,7 @@ def map_the_data(gp_dataframe):
     locations = summarize_cntr_and_ftrs(gp_dataframe)
     col_dict = {
             biome: col for biome, col in zip(
-                gp_dataframe.env_biome.unique(), FOL_COLS+FOL_COLS)}
-
+                gp_dataframe.env_biome.unique(), FOL_COLS*10)}
     for coordinates, samples in locations.groupby(level=[1, 2]):
         bm = samples.biome[0]
         if type(bm) != str:
