@@ -14,9 +14,7 @@ DATABASES = [
         "biomes/root:Host-associated:Plants:Rhizoplane/samples",
         "biomes/root:Host-associated:Plants:Rhizosphere/samples"]
 
-def run(file_name):
-    """Download the metadata for EBI metagenomics soil samples."""
-    FIELDNAMES = [
+FIELDNAMES = [
         "accession",
         "sample_name",
         "longitude_deg",
@@ -26,13 +24,15 @@ def run(file_name):
         "env_biome",
         "env_feature",
         "env_material"
-    ]
+        ]
+def run(file_name):
+    """Download the metadata for EBI metagenomics soil samples."""
 #    if (os.path.exists(file_name)):
 #        print(f"File {file_name} already exists. Nothing was downloaded.")
 #        return
     
     sysprint = sys.stdout
-    print("Starting to downlad EBI metadata...")
+    print("Starting to download EBI metadata...")
     with open(file_name, "w") as csvfile:
         # CSV initialization
         writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES)
@@ -52,10 +52,9 @@ def run(file_name):
             # sessions.iterate will take care of the pagination for us
             sysprint.write(f"Downloaded samples:")
             sysprint.flush()
-            for i, sample in enumerate(
-                    session.iterate(f"{DATABASES[1]}/samples",
-                        api_filter)):
-                # if (sample.latitude != "" and sample.longitude != ""):  # avoid samples without coordinates
+            i = 0
+            for db in DATABASES:
+                for sample in session.iterate(db, api_filter):
                     if i % 100 == 0:
                         sysprint.write(f"\t{i}")
                         sysprint.flush()
@@ -70,6 +69,48 @@ def run(file_name):
                          sample.environment_feature,
                          sample.environment_material]))
                     writer.writerow(row)
+                    i += 1
 
             print(f"Data retrieved from the API.\nOverall found samples: {i}.")
     return
+
+def run_on_mgrast(file_name):
+    """Download the metadata for MG-RAST soil samples."""
+    # more information about the API: https://api.mg-rast.org/api.html
+    from urllib.request import Request, urlopen
+    import json
+    MG_RAST_API_BASE = "https://api.mg-rast.org/metagenome?"
+    LIMITS = 1000 # set to 1000 max by MG-RAST
+    ENV_PACKAGE = "soil"
+    CENTRAL_QUERY = "&order=id&direction=asc&match=all&status=both&verbosity=mixs&offset="
+    with open(file_name, "w") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        
+        print("Starting to download MG-RAST metadata...")
+
+        req = Request(f"{MG_RAST_API_BASE}limit={LIMITS}&env_package={ENV_PACKAGE}&{CENTRAL_QUERY}0")
+        i = 0
+        while(True):
+            result = urlopen(req)
+            content = result.read().decode("utf8")
+            obj = json.loads(content)
+            for sample in obj["data"]:
+                i += 1
+                row = dict(zip(FIELDNAMES,
+                    [sample["id"],
+                     sample["name"],
+                     sample["longitude"],
+                     sample["latitude"],
+                     sample["country"],
+                     sample["sequence_type"], # here we place sequence_type instead of studies on purpose!!!
+                     sample["biome"],
+                     sample["feature"],
+                     sample["material"]]))
+                writer.writerow(row)
+            try:
+                req = Request(obj["next"])
+            except ValueError:
+                print(f"Data retrieved from the API.\nOverall found samples: {i}.")
+                return
+
