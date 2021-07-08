@@ -1,4 +1,8 @@
 # ignore large datasets
 data/geolifeclef*
 
+# ignore unneccessary data
+data/mgrast_total_dataset_2021_07_07.csv
 
+# ignore all .DS_Stores
+*.DS_Store
