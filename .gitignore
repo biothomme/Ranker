@@ -1,0 +1,4 @@
+# ignore large datasets
+data/geolifeclef*
+
+
