@@ -9,6 +9,7 @@ import restapi_ebi
 
 EMP_METADATA = "emp_qiime_mapping_release1_20170912.csv"
 EBI_METADATA = "ebi_ena_soil_dataset"
+MGRAST_METADATA = "mgrast_soil_dataset"
 
 def import_gpframe(file_name, sep="\t", subsample=False):
     """ Import given csv/tsv file as geopandas geopandas dataframe. """
@@ -46,9 +47,16 @@ def total_n_samples(gp_dataframe):
 
 def summarize_cntr_and_ftrs(gp_dataframe):
     """ Display sampling locations sorted by country with biome info """
-    smdf = gp_dataframe.groupby(["std_country", "latitude_deg", "longitude_deg"]).agg(
-        biome=pd.NamedAgg(column="env_biome", aggfunc=pd.unique),
-        n_samples=pd.NamedAgg(column="env_biome", aggfunc="size"))
+    unq = lambda x: list(set(x)) if len(set(x)) != 1 else list(set(x))[0] # strangely the pd.unique does not work here for one frame
+    if "experiment_type" in gp_dataframe.columns:
+        smdf = gp_dataframe.groupby(["std_country", "latitude_deg", "longitude_deg"]).agg(
+            experiment_type=pd.NamedAgg(column="experiment_type", aggfunc=unq),#, aggfunc=pd.unique),
+            biome=pd.NamedAgg(column="env_biome", aggfunc=unq),
+            n_samples=pd.NamedAgg(column="env_biome", aggfunc="size"))
+    else:
+        smdf = gp_dataframe.groupby(["std_country", "latitude_deg", "longitude_deg"]).agg(
+            biome=pd.NamedAgg(column="env_biome", aggfunc=unq),
+            n_samples=pd.NamedAgg(column="env_biome", aggfunc="size"))
     return smdf
 
 
@@ -103,7 +111,7 @@ def overall_env_features(gp_dataframe):
     return
 
 
-def map_the_data(gp_dataframe):
+def map_the_data(gp_dataframe, experiment_type=False):
     """Plot the distribution of all datasamples on interactive map."""
     import folium
     FOL_COLS = ['darkred', 'white', 'cadetblue', 'pink', 'red', 'gray',
@@ -115,36 +123,60 @@ def map_the_data(gp_dataframe):
     col_dict = {
             biome: col for biome, col in zip(
                 gp_dataframe.env_biome.unique(), FOL_COLS*10)}
+    if experiment_type:
+        col_dict = {
+                biome: col for biome, col in zip(
+                    gp_dataframe.experiment_type.unique(), FOL_COLS*10)}
     for coordinates, samples in locations.groupby(level=[1, 2]):
         bm = samples.biome[0]
-        if type(bm) != str:
+        if experiment_type:
+            et = samples.experiment_type[0]
+        if experiment_type: label = et
+        else: label = bm
+        if type(label) != str:
             loc_col = "orange"
         else:
-            loc_col = col_dict[bm]
+            loc_col = col_dict[label]
+        popup = f"Biomes: {bm}\nSamples: {samples.n_samples[0]}"
+        if experiment_type: popup = f"{popup}\nExp. type: {et}"
         mp.add_child(
             folium.Marker(
                 location=coordinates,
-                popup=f"Biomes: {bm}\nSamples: {samples.n_samples[0]}",
+                popup=popup,
                 icon=folium.Icon(color=loc_col)
             ))
     return mp
 
 
 def load_ebi_data():
-    """Download the metadata from ebi m,etagenomics soil samples."""
+    """Download the metadata from ebi metagenomics soil samples."""
     if any(EBI_METADATA in ds for ds in os.listdir(data_dir)):
         if ask_for_ebi_reload():
             restapi_ebi.run(os.path.join(data_dir, f"{EBI_METADATA}_{date.today().strftime('%Y_%m_%d')}.csv"))
     else:
         restapi_ebi.run(os.path.join(data_dir, f"{EBI_METADATA}_{date.today().strftime('%Y_%m_%d')}.csv"))
-    return 
+    return
+
+
+def load_mg_rast_data(total=False):
+    """Download the metadata from MG-RAST soil (or total) samples."""
+    if total:
+        mgmd_name = MGRAST_METADATA.replace("soil", "total")
+    else:
+        mgmd_name = MGRAST_METADATA
+    if any(mgmd_name in ds for ds in os.listdir(data_dir)):
+        if ask_for_ebi_reload():
+            restapi_ebi.run_on_mgrast(os.path.join(data_dir, f"{mgmd_name}_{date.today().strftime('%Y_%m_%d')}.csv"), total=total)
+    else:
+        restapi_ebi.run_on_mgrast(os.path.join(data_dir, f"{mgmd_name}_{date.today().strftime('%Y_%m_%d')}.csv"), total=total)
+    return
 
 
 def ask_for_ebi_reload():
     """Get user input to decide if ENA metadata set should be reloaded."""
     CHOICES = {"y": True, "n": False}
     while(True):
-        answer = input("Do you want to reload the metadata from EBI database? [y/n]")
+        answer = input("Do you want to reload the metadata from EBI (or MG-RAST) database? [y/n]")
         for ans, choice in CHOICES.items():
             if answer.lower() == ans:
                 return choice
@@ -152,10 +184,18 @@ def ask_for_ebi_reload():
     return
 
 
-def import_ebi():
+def import_ebi(mg_rast=False):
     """Import and globally store ebi metadata set from latest download."""
-    ebi_metapostfix = sorted([ds for ds in os.listdir(data_dir) if EBI_METADATA in ds])[-1]
+    data_file = EBI_METADATA
+    if mg_rast:
+        data_file = MGRAST_METADATA
+    ebi_metapostfix = sorted([ds for ds in os.listdir(data_dir) if data_file in ds])[-1]
     ebi_metafile = os.path.join(data_dir, ebi_metapostfix)
+    print(ebi_metafile)
+    if mg_rast:
+        global mgrast_df
+        mgrast_df = import_gpframe(ebi_metafile, sep=",")
+        return
     global ebi_df
     ebi_df = import_gpframe(ebi_metafile, sep=",")
     return

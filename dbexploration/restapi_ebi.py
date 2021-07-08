@@ -23,7 +23,9 @@ FIELDNAMES = [
         "studies",
         "env_biome",
         "env_feature",
-        "env_material"
+        "env_material",
+        "experiment_type",
+        "collection_date"
         ]
 def run(file_name):
     """Download the metadata for EBI metagenomics soil samples."""
@@ -58,6 +60,10 @@ def run(file_name):
                     if i % 100 == 0:
                         sysprint.write(f"\t{i}")
                         sysprint.flush()
+                    try:
+                        experiment = sample.relationships.runs.links.related.fetch().resources[0].attributes["experiment-type"]
+                    except IndexError:
+                        experiment = "unknown"
                     row = dict(zip(FIELDNAMES,
                         [sample.accession,
                          sample.sample_name,
@@ -67,14 +73,16 @@ def run(file_name):
                          ",".join([study.accession for study in sample.studies]),
                          sample.environment_biome,
                          sample.environment_feature,
-                         sample.environment_material]))
+                         sample.environment_material,
+                         experiment,
+                         sample["collection-date"]]))
                     writer.writerow(row)
                     i += 1
 
             print(f"Data retrieved from the API.\nOverall found samples: {i}.")
     return
 
-def run_on_mgrast(file_name):
+def run_on_mgrast(file_name, total=False):
     """Download the metadata for MG-RAST soil samples."""
     # more information about the API: https://api.mg-rast.org/api.html
     from urllib.request import Request, urlopen
@@ -83,13 +91,17 @@ def run_on_mgrast(file_name):
     LIMITS = 1000 # set to 1000 max by MG-RAST
     ENV_PACKAGE = "soil"
     CENTRAL_QUERY = "&order=id&direction=asc&match=all&status=both&verbosity=mixs&offset="
+    WEBKEY = "LHDzgfzdMiu7FUb4nURMbsAYz"
     with open(file_name, "w") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES)
+        writer = csv.DictWriter(csvfile, fieldnames=FIELDNAMES+["env_package_type"])
         writer.writeheader()
         
         print("Starting to download MG-RAST metadata...")
 
-        req = Request(f"{MG_RAST_API_BASE}limit={LIMITS}&env_package={ENV_PACKAGE}&{CENTRAL_QUERY}0")
+        if not total:
+            req = Request(f"{MG_RAST_API_BASE}limit={LIMITS}&material={ENV_PACKAGE}&{CENTRAL_QUERY}0&auth={WEBKEY}")
+        else:
+            req = Request(f"{MG_RAST_API_BASE}limit={LIMITS}&{CENTRAL_QUERY}0&auth={WEBKEY}")
         i = 0
         while(True):
             result = urlopen(req)
@@ -97,20 +109,22 @@ def run_on_mgrast(file_name):
             obj = json.loads(content)
             for sample in obj["data"]:
                 i += 1
-                row = dict(zip(FIELDNAMES,
+                row = dict(zip(FIELDNAMES+["env_package_type"],
                     [sample["id"],
                      sample["name"],
                      sample["longitude"],
                      sample["latitude"],
                      sample["country"],
-                     sample["sequence_type"], # here we place sequence_type instead of studies on purpose!!!
+                     sample["project_name"], 
                      sample["biome"],
                      sample["feature"],
-                     sample["material"]]))
+                     sample["material"],
+                     sample["sequence_type"],
+                     sample["collection_date"],
+                     sample["env_package_type"]]))
                 writer.writerow(row)
             try:
                 req = Request(obj["next"])
             except ValueError:
                 print(f"Data retrieved from the API.\nOverall found samples: {i}.")
                 return
-
