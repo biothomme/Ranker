@@ -1,4 +1,5 @@
-#
+# core utilities for download of soil metagenomics metadata
+# and exploration
 
 import os
 import pandas as pd
@@ -10,6 +11,14 @@ import restapi_ebi
 EMP_METADATA = "emp_qiime_mapping_release1_20170912.csv"
 EBI_METADATA = "ebi_ena_soil_dataset"
 MGRAST_METADATA = "mgrast_soil_dataset"
+
+def load_dirs():
+    """ Store base and data directory globally. """
+    global data_dir, parent_dir
+    parent_dir = os.path.dirname(os.getcwd())
+    data_dir = os.path.join(parent_dir, "data")
+    return
+
 
 def import_gpframe(file_name, sep="\t", subsample=False):
     """ Import given csv/tsv file as geopandas geopandas dataframe. """
@@ -219,9 +228,7 @@ def dist_between_coord(point1, point2):
 def main():
     pd.options.display.max_rows = 9999
 
-    global parent_dir, data_dir
-    parent_dir = os.path.dirname(os.getcwd())
-    data_dir = os.path.join(parent_dir, "data")
+    load_dirs()
     
     # import emp meta dataset
     if os.path.exists(os.path.join(data_dir, EMP_METADATA.replace(".csv", "_processed.csv"))):
