@@ -25,6 +25,28 @@ class SpatialData(metaclass=ABCMeta):
     def get_data(self, build_query):
         pass  # return data_retrieved
 
+
+    # produce query, request and store data
+    def run(self, location):
+        '''
+        try to download data from NAIP for given location.
+        '''
+        self.authenticate()
+        # the NAIP database used here can be accessed efficiently by first downloading
+        # a tile index, which is used in a second step to retrieve the necessary tiles.
+        # to load the index, we use a subsequent function.
+        self.location = location
+        
+        queries = self.build_query()
+        try:
+            data_files = self.get_data(queries)
+        except:
+            print(f"It was not possible to fetch data for location {location}")
+        else:
+            print(f"Data for location {location} was downloaded as "
+                    "{[df for df in data_files] if type(data_files) == list else datafiles}")
+        return # WAS NOT TESTED YET!!!!
+
     # store the data 
     def store_data(self, data_retrieved):
         pass
@@ -48,25 +70,6 @@ class NAIPData(SpatialData):
                 self.root,
                 self.database.lower().replace(" ", "_"))
 
-    def run(self, location):
-        '''
-        try to download data from NAIP for given location.
-        '''
-        self.authenticate()
-        # the NAIP database used here can be accessed efficiently by first downloading
-        # a tile index, which is used in a second step to retrieve the necessary tiles.
-        # to load the index, we use a subsequent function.
-        self.prepare()
-        self.location = location
-        queries = self.build_query(location)
-        try:
-            data_files = self.get_data(queries)
-        except:
-            print(f"It was not possible to fetch data for location {location}")
-        else:
-            print(f"Data for location {location} was downloaded as "
-                    "{[df for df in data_files] if type(data_files) == list else datafiles}")
-        return # WAS NOT TESTED YET!!!!
 
     def authenticate(self):
         # TODO # 
@@ -77,18 +80,27 @@ class NAIPData(SpatialData):
         '''
         Construct a query for NAIP database from coordinates and date
         '''
-        self.location = location
-        # copied code BEGIN
-        intersected_indices = list(self.tile_rtree.intersection(location.bounds))
+        # the NAIP database used here can be accessed efficiently by first downloading
+        # a tile index, which is used in a second step to retrieve the necessary tiles.
+        # to load the index, we use a subsequent function.
+        self.prepare()
+        
+        ## copied but adjusted code BEGIN ##
+        # get tiles with overlap
+        intersected_indices = list(self.tile_rtree.intersection(self.location.bounds))
         assert len(intersected_indices) > 0, (
                 "Location has no intersections with NAIP tiles.")
+
+        # initialize list of queries
         queries = []
         tile_intersection = False
 
+        
         for idx in intersected_indices:
             intersected_file = self.tile_index[idx][0]
             intersected_geom = self.tile_index[idx][1]
             if intersected_geom.contains(point):
+                # avoid that tiles only touch on edge/point
                 tile_intersection = True
                 queries.append(intersected_file)
         
@@ -100,14 +112,22 @@ class NAIPData(SpatialData):
             return queries[0]
         else:
             return queries
-        # copied code END
+        # copied but adjusted code END
+
 
     def get_data(self, queries):
+        '''
+        Download the data for the NAIP query.
+        '''
+        # deal with multiple queries for a single location
         if type(queries) == list:
             data_files = []
             for query in queries:
                 data_files.append(self.get_data(query))
-            return data_files
+            # stitch m
+            data_file = stitch_tiles(data_files)
+        
+        # deal with a single file; recursively
         else:
             data_file = query.replace("://", "_").replace("/", "_")
             try:
@@ -115,7 +135,9 @@ class NAIPData(SpatialData):
             except:
                 print(f"Error, it was impossible to download data for the query {query}"
                         " at location {self.location}.")
-            return data_file
+
+        return data_file
+
 
     def prepare(self):
         '''
@@ -127,6 +149,7 @@ class NAIPData(SpatialData):
         if not os.exists(self.database_dir):
             print(f"The directory for database '{self.database}' will be"
                     " initialized.")
+
         # download tile indices
         tile_indices_root = os.join(self.database_dir, "tile_indices")
         tile_indices_paths = [
@@ -136,9 +159,11 @@ class NAIPData(SpatialData):
                 os.makedirs(tile_index_path)
                 print(f"The tiles index file {tile_index_path}"
                         " ({i+1}/{len(INDEX_FILES}) was downloaded.")
+        
         # load index_files (taken from #REF01)
         self.tile_rtree = rtree.index.Index(
                 os.join(tile_indices_root, "tile_index"))
         self.tile_index = pickle.load(open(tile_indices_root[2], "rb"))
         return
+
 
