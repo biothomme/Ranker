@@ -10,6 +10,7 @@ import datetime
 import database_classes
 from utils import set_directory
 from utils import set_locations
+
 # core class
 class GetMultiDBData:
     # the most necessary parameters are locations (shapely.Point
