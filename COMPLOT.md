@@ -24,7 +24,7 @@ Decision on implementing a tool to download data for a given location (coordinat
     [x] Initialize module in python
     [x] Design abstract mining class (input location, output (Image|value|list))
     [ ] Build dummy mining class with csv output
-    [ ] Build mining class for NAIP
+    [x] Build mining class for NAIP
     [ ] Apply stitching to NAIP images
     [ ] Collect other databases
     [ ] Implement listing of data collection for mining multiple databases at once
@@ -59,6 +59,50 @@ Decision on implementing a tool to download data for a given location (coordinat
     20:11:02 From David Dao to Everyone : https://planetarycomputer.microsoft.com/catalog<br>
 </details>
 
-Next meeting: 17.07.2021
-
 ---
+## 17.07.2021 - Possible datasets
+We briefly discussed the structuring of the classes. Object oriented programming is used to define classes that do stuff on input. In our case we have datamining classes for mutliple databases, that download data for a given geo location.
+Overall a multimining class can be used to define the databases that should be used for a list of location inputs.
+
+Furthermore, it was important to define how to access databases that need authentication. We will use json format and define our own file for it, such that users can enter their secret passes.
+
+Decision: As we are not far, we just decided to continue on coding.
+
+<details>
+  <summary>Chat protocoll</summary>
+    [6:56 PM - LC] <br>
+    https://www.python-course.eu/python3_abstract_classes.php<br>
+    python-course.eu<br>
+    OOP Python Tutorial: 'The ABC' of Abstract Base Classes<br>
+    Abstract Classes in Python using the abc module<br>
+    [6:59 PM] <br>
+    {<br>
+        "naip": {<br>
+        "token": "abc...",<br>
+        "version": "1.4",<br>
+        # "local": "/path/to/a/local/copy/to/avoid/download",<br>
+        "db_path": "ftp://bla/bla"<br>
+        }<br>
+    }<br>
+    (edited)<br>
+    [7:01 PM - LC]<br> 
+    class NaipDB:<br>
+        def __init__( self, token ):<br>
+            # use token<br>
+            ...<br>
+    <br>
+    <br>
+    config = load_config_from_json( "/path/to/config.json" )<br>
+    <br>
+    my_naip_db = NaipDB( config["naip"]["token"] )<br>
+    # or<br>
+    my_naip_db = NaipDB( config )<br>
+    (edited)<br>
+    [7:03 PM - LC]
+    json, yaml<br>
+    <br>
+</details>
+
+
+Probably we should split the file database_classes.py for each database in a single file. That would be easier to keep overview.
+Next meeting: 31.07.2021
