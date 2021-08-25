@@ -2,11 +2,13 @@
 # project on geolocations
 
 from abc import ABCMeta, abstractmethod
+import os
 import pickle
 import rtree
+import urllib
 
 from utils import set_directory
-
+from utils import download_to_path
 
 # Core abstract class that provides important methods for all subclasses
 class SpatialData(metaclass=ABCMeta):
@@ -38,14 +40,15 @@ class SpatialData(metaclass=ABCMeta):
         self.location = location
         
         queries = self.build_query()
-        try:
-            data_files = self.get_data(queries)
-        except:
-            print(f"It was not possible to fetch data for location {location}")
-        else:
-            print(f"Data for location {location} was downloaded as "
-                    "{[df for df in data_files] if type(data_files) == list else datafiles}")
-        return # WAS NOT TESTED YET!!!!
+        print(queries)
+        #try:
+        data_files = self.get_data(queries)
+        #except:
+        #    print(f"It was not possible to fetch data for location {location}")
+        #else:
+        #    print(f"Data for location {location} was downloaded as "
+        #            "{[df for df in data_files] if type(data_files) == list else datafiles}")
+        return # TODO WAS NOT TESTED YET!!!!
 
     # store the data 
     def store_data(self, data_retrieved):
@@ -61,22 +64,24 @@ class NAIPData(SpatialData):
     # The code is strongly inspired by (#REF01):
     # https://planetarycomputer.microsoft.com/dataset/naip#Blob-Storage-Notebook
     # Thanks a lot to the authors.
-    from multidb_wrapper import set_directory
+    from utils import set_directory
 
     def __init__(self, tile_size=None, directory=None):
         self.database = "NAIP western europe Azure"
+        self.base_url = "https://naipblobs.blob.core.windows.net/naip"
         self.root = set_directory(directory)
-        self.database_dir = os.join(
+        self.database_dir = os.path.join(
                 self.root,
                 self.database.lower().replace(" ", "_"))
-
+        
 
     def authenticate(self):
         # TODO # 
         print("logged in")
+        return
 
 
-    def build_query(self, location, date=None):
+    def build_query(self, date=None):
         '''
         Construct a query for NAIP database from coordinates and date
         '''
@@ -95,12 +100,12 @@ class NAIPData(SpatialData):
         queries = []
         tile_intersection = False
 
-        
+        # load the tiles which overlap with the location
         for idx in intersected_indices:
             intersected_file = self.tile_index[idx][0]
             intersected_geom = self.tile_index[idx][1]
-            if intersected_geom.contains(point):
-                # avoid that tiles only touch on edge/point
+            if intersected_geom.contains(self.location):
+                # avoid that tiles only touch on edge/
                 tile_intersection = True
                 queries.append(intersected_file)
         
@@ -124,17 +129,18 @@ class NAIPData(SpatialData):
             data_files = []
             for query in queries:
                 data_files.append(self.get_data(query))
-            # stitch m
-            data_file = stitch_tiles(data_files)
-        
-        # deal with a single file; recursively
+            # stitch multiple tiles to one
+            # TODO data_file = stitch_tiles(data_files)
+            data_file = data_files[0] 
+        # deal with a single file as @queries; recursively
         else:
-            data_file = query.replace("://", "_").replace("/", "_")
+            data_file = os.path.join(self.database_dir, queries)
+            query_url = "/".join([self.base_url, queries]) 
             try:
-                urllib.request(query, data_file)
+                download_to_path(query_url, data_file)
             except:
-                print(f"Error, it was impossible to download data for the query {query}"
-                        " at location {self.location}.")
+                print(f"Error, it was impossible to download data for the query"
+                        f" '{queries}' at location {self.location}.")
 
         return data_file
 
@@ -142,28 +148,29 @@ class NAIPData(SpatialData):
     def prepare(self):
         '''
         Build NAIP database directory and download the index files if not already
-        existent.
+        existent
         '''
+        URL_INDEX = "https://naipeuwest.blob.core.windows.net/naip-index/rtree"
         INDEX_FILES = ["tile_index.dat", "tile_index.idx", "tiles.p"]
         # initialize db directory
-        if not os.exists(self.database_dir):
+        if not os.path.exists(self.database_dir):
             print(f"The directory for database '{self.database}' will be"
                     " initialized.")
 
-        # download tile indices
-        tile_indices_root = os.join(self.database_dir, "tile_indices")
-        tile_indices_paths = [
-                os.join(tile_indices_root, file) for file in INDEX_FILES]
-        for i, tile_index_path in enumerate(tile_indices_paths):
-            if not os.exists(tile_index_path):
-                os.makedirs(tile_index_path)
-                print(f"The tiles index file {tile_index_path}"
-                        " ({i+1}/{len(INDEX_FILES}) was downloaded.")
+        # download tile indices which are 3 files as in INDEX_FILES
+        tile_indices_root = os.path.join(self.database_dir, "tile_indices")
+        tile_indices_paths = {
+                os.path.join(tile_indices_root, file):
+                "/".join([URL_INDEX, file]) for file in INDEX_FILES}
+        for i, (ti_path, ti_url) in enumerate(tile_indices_paths.items()):
+            download_to_path(ti_url, ti_path)
         
         # load index_files (taken from #REF01)
         self.tile_rtree = rtree.index.Index(
-                os.join(tile_indices_root, "tile_index"))
-        self.tile_index = pickle.load(open(tile_indices_root[2], "rb"))
+                os.path.join(tile_indices_root, "tile_index"))
+        self.tile_index = pickle.load(
+                open([fl for fl in tile_indices_paths.keys()
+                    if "tiles.p" in fl][0], "rb"))
         return
 
 
