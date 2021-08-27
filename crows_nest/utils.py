@@ -63,11 +63,12 @@ def download_to_path(url, file_path,
         except (HTTPError, URLError) as err:
             print(f"The download of {url} failed with {err}")
         else:
-            if not silent:
-                print(f"Data from {url} was retrieved to {file_path}.")
+            print(f"Data from {url} was retrieved to {file_path}.\n"
+                    if not silent else "", end="")
     else:
+        print(url)
         print(f"{file_path} already exists. It will not be "
-            "overwritten.")
+            "overwritten.\n" if not silent else "", end="")
         return
 
 
