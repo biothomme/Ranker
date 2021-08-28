@@ -2,6 +2,7 @@
 # it uses the NAIP western europe Azure blob storage.
 
 # package imports
+from datetime import date
 import os
 import pickle
 import rtree
@@ -20,14 +21,22 @@ class NAIPData(SpatialData):
     # Thanks a lot to the authors.
     from utils import set_directory
 
-    def __init__(self, tile_size=100, directory=None):
+    def __init__(self, tile_size=100, directory=None, date_given=None):
         self.database = "NAIP western europe Azure"
         self.base_url = "https://naipblobs.blob.core.windows.net/naip"
         self.root = set_directory(directory)
         self.database_dir = os.path.join(
                 self.root,
                 self.database.lower().replace(" ", "_"))
+    
+        if date_given is None:
+            self.date = date.today()
+        else:
+            self.date = date_given
+        
         self.tile_size = tile_size
+        self.tile_sizes_dict = {}
+
         return
 
     def authenticate(self):
@@ -47,7 +56,7 @@ class NAIPData(SpatialData):
         
         ## copied but adjusted code BEGIN ##
         # get tiles with overlap
-        queries = _get_intersected_tile(self.location.bounds, self.date,
+        queries = _get_intersected_tiles(self.location, self.date,
                 self.tile_rtree, self.tile_index)
         return queries
 
@@ -77,7 +86,7 @@ class NAIPData(SpatialData):
         return data_file
 
 
-    def prepare(self):
+    def prepare(self, silent=False):
         '''
         Build NAIP database directory and download the index files if not already
         existent
@@ -108,23 +117,28 @@ class NAIPData(SpatialData):
         # multiple resolutions. as all of the tiles should reflect the same
         # physical size, tiles need to be adjusted by their pixel sizes.
         # we try to obtain that by calculating a tile size in pixel for each
-        # combination of resolution and date (tuple). we store it in a
+        # combination of resolution and year (tuple). we store it in a
         # dictionary. this takes some steps
+        if not self.tile_sizes_dict:
         # 1 - get all different tuples
-        resolutions_and_years = set(  # TODO this using less space?
-                map(_get_resolution_and_date,
-                    [ix[0] for ix in self.tile_index.values()]))
-        print(resolutions_and_years)
-
-        # 2 - retrieve the number of pixels per tile dimension for each
-        #     tuple
-        #     the computation is standardized by using the centroid of 
-        #     the rectangular bounds of the dataset.
-        e, n, w, s = self.tile_rtree.bounds
-        centroid = _get_centroid(e, n, w, s)
+            resolutions_and_years = set(  # TODO this using less space?
+                    map(_get_resolution_and_date,
+                        [ix[0] for ix in self.tile_index.values()]))
         
-        self.tile_sizes_dict = 
-
+        # 2 - retrieve the mean number of pixels per tile. here we use
+        #     for each resolution_year_tuple the first image in index order
+        #     to calculate the numbers of pixels per tile (averaged between
+        #     height and width).
+            for ryt in resolutions_and_years:
+                self.tile_sizes_dict[ryt] = _compute_tile_pixel(
+                        self.tile_size, self.tile_index, ryt)
+            if not silent:
+                print(f"A size of {self.tile_size} meters was chosen for each",
+                        "tile dimension. For different resolutions and",
+                        "years, this corresponds to the following sizes",
+                        "in pixels:")
+                for ((r, y), size) in self.tile_sizes_dict.items():
+                    print(f"    - {y.year} ({r} cm): {size} px") 
         return
 
 
@@ -145,41 +159,15 @@ def _get_resolution_and_date(query):
     date_given = int(re.search(r'(?<=cm_)\d+', query).group(0))
     return (resolution, date(date_given, 1, 1))    
 
-# assign tile size in pixels for a given resolution and 
-# year tuple
-def _get_tile_pixels(resolution_year_tuple):
-    '''
-    '''
-    centroid = 
-    return 
-
-def _get_centroid(east_limit, north_limit,
-        west_limit, south_limit):
-    '''
-    Infer the centroid point given limits in all cardinal
-    directions.
-    the coordinates should be entered in epsg:4326 system.
-    '''
-    import geopandas as gpd
-    diagonal_line = gpd.GeoSeries(
-            [LineString([
-                [east_limit, north_limit],
-                [west_limit, south_limit]])],
-            crs="epsg:4326")
-    # as we need a projected epsg to draw a flat line, the
-    # line will be transferred to epsg:3857 (a projection)
-    # to compute the centroid with a following backtrafo.
-    diagonal_line_in_epsg3857 = diagonal_line.to_crs("epsg:3857")
-    centroid = diagonal_line_in_epsg3857.centroid.to_crs("epsg:4326")
-    return centroid
 
 # obtain the tile filenames that fit a given location to best date
-def _get_intersected_tiles(point, preferred_date, tile_rtree, tile_index,
+def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
         strict_date=False, no_date_filter=False):
     '''
-    TODO
+    Look up tile file name(s) that intersect with a given point.
+    These can be even selected for a given year (or best year before it).
     '''
-    intersected_indices = list(tile_rtree.intersection(point))
+    intersected_indices = list(tile_rtree.intersection(point.bounds))
     assert len(intersected_indices) > 0, (
             "Location has no intersections with NAIP tiles.")
 
@@ -195,20 +183,20 @@ def _get_intersected_tiles(point, preferred_date, tile_rtree, tile_index,
     dates = [_get_resolution_and_date(tile_index[i][0])[1]
             for i in intersected_indices]
     if strict_date:  # allows to only use dates from the same year.
-        dates.filter(lambda x: x.year == date_given.year)
-    else if all(dates > date_given):
+        dates = filter(lambda x: x.year == date_preferred.year, dates)
+    elif all(map(lambda x: x > date_preferred, dates)):
         best_date = min(dates)
     else:
-        dates = dates.filter(lambda x: x <= date_given)
+        dates = filter(lambda x: x <= date_preferred, dates)
         best_date = max(dates)
 
     # load the tiles which overlap with the location
     for idx in intersected_indices:
-        intersected_file = self.tile_index[idx][0]
+        intersected_file = tile_index[idx][0]
         if (_get_resolution_and_date(intersected_file)[1] == best_date or
                 no_date_filter):  # still allows to retrieve all intersecting tiles
-            intersected_geom = self.tile_index[idx][1]
-            if intersected_geom.contains(self.location):
+            intersected_geom = tile_index[idx][1]
+            if intersected_geom.contains(point):
                 # avoid that tiles only touch on edge/corner
                 tile_intersection = True
                 queries.append(intersected_file)
@@ -223,8 +211,84 @@ def _get_intersected_tiles(point, preferred_date, tile_rtree, tile_index,
         return queries
     # copied but adjusted code END
 
-def _compute_tile_pixel(tile_size, query):
 
+# obtain tile size in pixels for a resolution_year_tuple.
+# the first image in the index, sharing this tuple is
+# used for the estimation
+def _compute_tile_pixel(tile_size, tile_index, resolution_year_tuple):
+    '''
+    Compute the tile size in pixels for a given resolution
+    and year.
+    '''
+    import numpy as np
+
+    # we extract name and geom of the first image that is in given
+    # resolution from given year. this is standardized, as index 
+    # is ordered (as long as the index of the database does not 
+    # change - who knows?...)
+    for i in tile_index:
+        if _get_resolution_and_date(
+                tile_index[i][0]) == resolution_year_tuple:
+            index_first_ryt = i
+            break
+
+    tile_query = tile_index[index_first_ryt][0]
+    tile_geom = tile_index[index_first_ryt][1]
+    
+    # we compute physical and pixel width and height
+    tile_query_url = _make_query_url(tile_query)
+    dim_pixel = np.array(_fetch_image_dimensions(tile_query_url))
+    dim_metric = np.array(_fetch_geom_dimensions(tile_geom))
+
+    # then they can be used to compute a mean number of pixels per
+    # meter.
+    pixels_per_metres = np.mean(dim_pixel/dim_metric)
+    
+    # finally, multiplied by tilesize in metres this gives us the
+    # number of pixels per tile. we use ceiling, so the tiles are 
+    # as large as, or larger, than wanted.
+    tile_size_pixels = int(np.ceil(pixels_per_metres*tile_size))
+    # for symmetric data extraction even pixelsizes are preferred.
+    if tile_size_pixels % 2 == 1:
+        tile_size_pixels += 1 
+    return tile_size_pixels
+
+
+# build the mature url for query
+def _make_query_url(query):
+    '''
+    Add database url to a given tile specific query.
+    '''
+    BASE_URL = "https://naipblobs.blob.core.windows.net/naip"
+    query_url = "/".join([BASE_URL, query])
+    return query_url
+
+# retrieve dimensions (height, width) of image in pixels
+def _fetch_image_dimensions(query_url):
+    '''
+    Fetch the height and width (pixel) of image given its url.
+    tuple of (height, width) will be returned
+    '''
+    import rasterio
+    with rasterio.open(query_url) as image:
+        hw_tuple = (image.height, image.width)
+    return hw_tuple
+
+# retrieve dimensions (height, width) of geom_rectangle in metres
+def _fetch_geom_dimensions(geom_rectangle):
+    bounds = geom_rectangle.bounds
+    from geopy.distance import geodesic
+    from numpy import mean
+
+    # as parallel edges of geodesic rectangles do not always have
+    # the same length, we take the mean of the opposing sides.
+    metric_height = mean([
+        geodesic((bounds[1], bounds[0]), (bounds[3], bounds[0])).m,
+        geodesic((bounds[1], bounds[2]), (bounds[3], bounds[2])).m])
+    metric_width = mean([
+        geodesic((bounds[3], bounds[0]), (bounds[3], bounds[2])).m,
+        geodesic((bounds[1], bounds[0]), (bounds[1], bounds[2])).m])
+    return (metric_height, metric_width)
 
 # because this database allows high resolution data, we try to
 # download quadratic tiles of a given size.
