@@ -21,22 +21,32 @@ class NAIPData(SpatialData):
     # Thanks a lot to the authors.
     from utils import set_directory
 
-    def __init__(self, tile_size=100, directory=None, date_given=None):
+    def __init__(self, features=[], tile_size=100,
+            directory=None, date_given=None, silent=False):
         self.database = "NAIP western europe Azure"
         self.base_url = "https://naipblobs.blob.core.windows.net/naip"
-        self.root = set_directory(directory)
-        self.database_dir = os.path.join(
-                self.root,
-                self.database.lower().replace(" ", "_"))
-    
-        if date_given is None:
-            self.date = date.today()
-        else:
-            self.date = date_given
         
+        # set root and database dir
+        self.set_db_directory(directory)
+        
+        # print or no print?
+        self.silent = silent
+        
+        # remember, if db index was already fetched
+        self.prepared = False
+
+        # define which datatypes should be fetched 
+        self.features = {"rgb": False, "ir": False}
+        for feature in features:
+            if feature.lower() in self.features.keys():
+                self.features[feature.lower()] = True
+            else:
+                print(f"Attention: Expected feature `{feature}`"
+                f" for database `{self.database}` was not found."
+                f" Use one of those: {self.features.keys()}" )
         self.tile_size = tile_size
         self.tile_sizes_dict = {}
-
+    
         return
 
     def authenticate(self):
@@ -45,23 +55,25 @@ class NAIPData(SpatialData):
         return
 
 
-    def build_query(self, date=None):
+    def build_query(self, location, date=None):
         '''
         Construct a query for NAIP database from coordinates and date
         '''
         # the NAIP database used here can be accessed efficiently by first downloading
         # a tile index, which is used in a second step to retrieve the necessary tiles.
         # to load the index, we use a subsequent function.
-        self.prepare()
+        if not self.prepared:
+            self.prepare()
+            self.prepared = True
         
         ## copied but adjusted code BEGIN ##
         # get tiles with overlap
-        queries = _get_intersected_tiles(self.location, self.date,
+        queries = _get_intersected_tiles(location, date,
                 self.tile_rtree, self.tile_index)
         return queries
 
 
-    def get_data(self, queries):
+    def get_data(self, queries, file_name, location):
         '''
         Download the data for the NAIP query.
         '''
@@ -69,7 +81,7 @@ class NAIPData(SpatialData):
         if type(queries) == list:
             data_files = []
             for query in queries:
-                data_files.append(self.get_data(query))
+                data_files.append(self.get_data(query, file_name, location))
             # stitch multiple tiles to one
             # TODO data_file = stitch_tiles(data_files)
             data_file = data_files[0] 
@@ -77,16 +89,22 @@ class NAIPData(SpatialData):
         else:
             data_file = os.path.join(self.database_dir, queries)
             query_url = "/".join([self.base_url, queries]) 
+            ry_tuple = _get_resolution_and_date(queries)
             try:
-                download_to_path(query_url, data_file, silent=False)
-            except:
+                fetch_best_tile(
+                        location, self.tile_sizes_dict[ry_tuple],
+                        query_url, file_name, self.features,
+                        silent=self.silent)
+                # to download whole images use:
+                # download_to_path(query_url, data_file, silent=self.silent)
+            except: # WHAT do i want to except TODO
                 print(f"Error, it was impossible to download data for the query"
-                        f" '{queries}' at location {self.location}.")
+                        f" '{queries}' at location {location}.")
 
         return data_file
 
 
-    def prepare(self, silent=False):
+    def prepare(self):
         '''
         Build NAIP database directory and download the index files if not already
         existent
@@ -97,6 +115,10 @@ class NAIPData(SpatialData):
         if not os.path.exists(self.database_dir):
             print(f"The directory for database '{self.database}' will be"
                     " initialized.")
+        
+        for feature in self.features:
+            if self.features[feature]:
+                set_directory(self.database_dir, database_name=feature)
 
         # download tile indices which are 3 files as in INDEX_FILES
         tile_indices_root = os.path.join(self.database_dir, "tile_indices")
@@ -132,7 +154,7 @@ class NAIPData(SpatialData):
             for ryt in resolutions_and_years:
                 self.tile_sizes_dict[ryt] = _compute_tile_pixel(
                         self.tile_size, self.tile_index, ryt)
-            if not silent:
+            if not self.silent:
                 print(f"A size of {self.tile_size} meters was chosen for each",
                         "tile dimension. For different resolutions and",
                         "years, this corresponds to the following sizes",
@@ -141,7 +163,15 @@ class NAIPData(SpatialData):
                     print(f"    - {y.year} ({r} cm): {size} px") 
         return
 
+    def make_file_name(self, index, total_number):
+        '''
 
+        '''
+        today = str(date.today()).replace("-", "_")
+        padding = total_number//10 + 1
+        file_name = "/".join([self.database_dir, "rgb",
+            f"{today}_loc_{str(index+1).zfill(padding)}.tif"])
+        return file_name
 # helpers
 
 # extract year and resolution from an index query
@@ -292,5 +322,61 @@ def _fetch_geom_dimensions(geom_rectangle):
 
 # because this database allows high resolution data, we try to
 # download quadratic tiles of a given size.
-def fetch_data_tile(query_url, data_file):
-    date = ""
+def fetch_best_tile(location, tile_size_pixels, query_url,
+                    file_name, features, silent=True):
+    '''
+    Download a tile of tile_size_pixels x tile_size_pixels of NAIP
+    image centered around location, retrieved from query_url and
+    to be stored as file_name.
+    '''
+    from fiona.transform import transform
+    import numpy as np
+    import rasterio
+
+    IO_CRS = "epsg:4326"
+
+    half_edge = int(tile_size_pixels/2)
+    with rasterio.open(query_url) as image:
+        # here coordinates need to be shifted from the input crs to
+        # the tif image crs and later converted to pixel
+        location_in_img_crs = [p[0] for p in transform(
+            IO_CRS, image.crs.to_string(), [location.x], [location.y])]
+        location_in_img_pix = [
+            int(np.floor(p)) for p in
+            ~image.transform * location_in_img_crs]
+
+        # a window around the tile can be produced
+        wdw = rasterio.windows.Window(
+            location_in_img_pix[0]-half_edge,
+            location_in_img_pix[1]-half_edge,
+            tile_size_pixels, tile_size_pixels)
+        image_tile = image.read(window=wdw)
+
+        kwargs = image.meta.copy()
+        kwargs.update({
+            'height': wdw.height,
+            'width': wdw.width,
+            'transform': rasterio.windows.transform(wdw, image.transform)})
+        
+        # store the tiles in rgb or ir image, if requested
+        for profile, phot_prof in zip(["rgb", "ir"], ["RGB", "Grayscale"]):
+            if features[profile]:
+                try:
+                    with rasterio.open(
+                            file_name.replace("rgb", profile), "w",
+                            photometric=phot_prof, **kwargs) as file:
+                        if profile == "rgb":
+                            file.write(image_tile)
+                        else:  # TODO: how to save as greyscale image?
+                            file.write(image_tile[3] , indexes=1)  # we only store the last layer.
+                except IOError as err:
+                    print(err)
+                    print(f"It was not possible to store the {profile.upper()}"
+                            f" image for tile at location {location}.\n" 
+                            if not silent else "" )
+                else:
+                    print(f"{profile.upper()} image for tile at location" 
+                            f" {location} was successfully downloaded to"
+                            f" {file_name}.\n" if not silent else "", end="")
+    return
+
