@@ -72,3 +72,30 @@ def download_to_path(url, file_path,
         return
 
 
+# helper to check if dates and locations list is of equal
+# length. Also checks if dates are given at all.
+# otherwise todays date will be used for all.
+def check_locations_and_dates(locations, dates):
+    '''
+    Load dates to datetime object and assert that there is
+    the same amount of locations and dates given.
+    Assign most recent date for all locations if None
+    provided
+    Load dates to datetime object and assert that there is
+    the same amount of locations and dates given.
+    Assign most recent date for all locations if None
+    provided.
+    '''
+    from datetime import date
+
+    if dates is not None:
+        assert len(locations) == len(dates), (
+                f"The length of the list of locations ({len(locations)})"
+                f" does not align with the one of dates ({len(locations)})\n"
+                f"Please check and try again.")
+        dates = [d if type(d) == date else date(d) for d in dates]
+    else:
+        dates = [date.today()] * len(locations)
+        print("As no dates were specified the most recent data will"
+                " be fetched.")
+    return dates

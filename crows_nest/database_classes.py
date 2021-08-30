@@ -2,6 +2,7 @@
 # project on geolocations
 
 from abc import ABCMeta, abstractmethod
+from datetime import date
 import os
 import pickle
 import rtree
@@ -9,6 +10,7 @@ import urllib
 
 from utils import set_directory
 from utils import download_to_path
+from utils import check_locations_and_dates
 
 # Core abstract class that provides important methods for all subclasses
 class SpatialData(metaclass=ABCMeta):
@@ -24,37 +26,39 @@ class SpatialData(metaclass=ABCMeta):
     
     # download the data
     @abstractmethod
-    def get_data(self, build_query):
+    def get_data(self, build_query, file_name, location):
         pass  # return data_retrieved
 
 
     # produce query, request and store data
-    def run(self, location):
+    def run(self, locations, dates=None):
         '''
         try to download data from NAIP for given location.
         '''
         self.authenticate()
-        # the NAIP database used here can be accessed efficiently by first downloading
-        # a tile index, which is used in a second step to retrieve the necessary tiles.
-        # to load the index, we use a subsequent function.
-        self.location = location
-        
-        queries = self.build_query()
-        print(queries)
-        #try:
-        data_files = self.get_data(queries)
-        #except:
-        #    print(f"It was not possible to fetch data for location {location}")
-        #else:
-        #    print(f"Data for location {location} was downloaded as "
-        #            "{[df for df in data_files] if type(data_files) == list else datafiles}")
-        return # TODO WAS NOT TESTED YET!!!!
+        self.size = len(locations)
+        # for each location we should have a respective date
+        dates = check_locations_and_dates(locations, dates)
 
-    # store the data 
-    def store_data(self, data_retrieved):
-        pass
+        # the search should be run for each location
+        for idx, (location, dt) in enumerate(zip(locations, dates)):
+            file_name = self.make_file_name(idx, self.size)
+            queries = self.build_query(location, dt)
+            print(queries)
+            data_files = self.get_data(queries, file_name, location)
+        return
 
-    # check if data for location is defined
+    # set a directory for databaseminer class and store in self
+    # this is important to allow flexibility in storing of
+    # multiple dataminers
+    def set_db_directory(self, directory):
+        self.root = set_directory(directory)
+        self.database_dir = os.path.join(
+                self.root,
+                self.database.lower().replace(" ", "_"))
+        return
+
+    # TODO make abstract method to check if data for location is defined
     def check_location(self, location):
         pass
 
