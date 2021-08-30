@@ -5,17 +5,17 @@
 
 import os
 import shapely
-import datetime
+from datetime import date
 
 import database_classes
 from utils import set_directory
 from utils import set_locations
+from utils import check_locations_and_dates
 
 # core class
 class GetMultiDBData:
     # the most necessary parameters are locations (shapely.Point
     # or list of it) and a root directory (str) to store the data in.
-    locations = None
     root = None
     temporary = False  # defines if directory is temp, to delete it later.
     
@@ -23,15 +23,12 @@ class GetMultiDBData:
     # should be mined.
     dataminers = []
     
-    # less important are date of each sample (datetime.date) and 
+    # also we use the date of each sample (datetime.date) and 
     # a the tile size in metres (float)
-    date = None
-    tile_size = 50  # tile dimension (tile_size X tile_size) in metres (?!) 
-    # TODO #
 
     # constructor
-    def __init__(self, longitudes, latitudes, directory=None):
-        self.locations = set_locations(longitudes, latitudes)
+    def __init__(self, dataminers, directory=None):
+        self.add_dataminers(dataminers)
         self.root = set_directory(directory)
         if directory is None:
             self.temporary = True
@@ -44,27 +41,37 @@ class GetMultiDBData:
         '''
         is_spatialdata = lambda x: isinstance(x, database_classes.SpatialData)
         if type(new_dataminers) == list:
+            # we need to avoid instances that are no dataminers
+            # and initialize a subdirectory within the central
+            # multidb directory, if not explicitly wished differently.
+            real_dataminers = filter(is_spatialdata, new_dataminers)
+            for dataminer in real_dataminers:
+                dataminer.set_db_directory(self.root)
+
             self.dataminers.extend(filter(is_spatialdata, new_dataminers))
+        
         elif is_spatialdata(new_dataminers):
             self.dataminers.append(new_dataminers)
+        
         else:
-            print(f"It is impossible to add {new_dataminers}, as it it no function"
+            print(f"It is impossible to add {new_dataminers}, as it is no function"
                     " or list of it.")
-        self.dataminers = list(set(self.dataminers))
+        # TODO: it could be problematic if someone adds
+        #       two instances of the same dataminer class
+        # self.dataminers = list(set(self.dataminers))
         
         return
 
-    # run the datamining an index location
-    def run_index(self, index):
-        assert type(index) == int, f"Index {index} needs to be an integer value."
-        assert index < len(self.locations), (
-                f"Index {index} was too large. Max index is len(self.locations)")
-        assert index > 0, f"Index {index} needs to be positive."
+    # run the datamining on provided locations and dates
+    def run(self, locations, dates=None):
+        '''
+        Retrieve data from all requested databases for a given set of
+        locations (and corresponding dates)
+        '''
+        # for each location we should have a respective date
+        dates = check_locations_and_dates(locations, dates)
         for dataminer in self.dataminers:
-            dataminer(self.locations[index],
-                    date=self.dates[index],
-                    tile_size=self.tile_size,
-                    directory=self.directory)  # run the mining on each database. 
+            dataminer.run(locations, dates=dates)  # run the mining on each database. 
         return
 
 
