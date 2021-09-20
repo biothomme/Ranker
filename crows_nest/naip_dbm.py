@@ -1,30 +1,38 @@
 # This file contains the class for queries of the NAIP database
 # it uses the NAIP western europe Azure blob storage.
 
-# package imports
+## package imports ##
 from datetime import date
 import os
 import pickle
 import rtree
 
 
-# local imports
+## local imports ##
 from utils import set_directory
 from utils import download_to_path
 from database_classes import SpatialData
 
 
-# the class
+## the class ##
 class NAIPData(SpatialData):
     # The code is strongly inspired by (#REF01):
     # https://planetarycomputer.microsoft.com/dataset/naip#Blob-Storage-Notebook
     # Thanks a lot to the authors.
     from utils import set_directory
 
-    def __init__(self, features=[], tile_size=100,
+    def __init__(self, features=[], source=None, tile_size=100,
             directory=None, date_given=None, silent=False):
         self.database = "NAIP western europe Azure"
         self.base_url = "https://naipblobs.blob.core.windows.net/naip"
+        
+        # option to load data from a local source
+        # implemented with keeping `self.base_url`, to allow different query architecture
+        # between local or online source
+        if source is None:
+            self.source = self.base_url
+        else:
+            self.source = source
         
         # set root and database dir
         self.set_db_directory(directory)
@@ -111,6 +119,7 @@ class NAIPData(SpatialData):
         '''
         URL_INDEX = "https://naipeuwest.blob.core.windows.net/naip-index/rtree"
         INDEX_FILES = ["tile_index.dat", "tile_index.idx", "tiles.p"]
+
         # initialize db directory
         if not os.path.exists(self.database_dir):
             print(f"The directory for database '{self.database}' will be"
@@ -172,7 +181,46 @@ class NAIPData(SpatialData):
         file_name = "/".join([self.database_dir, "rgb",
             f"{today}_loc_{str(index+1).zfill(padding)}.tif"])
         return file_name
-# helpers
+
+    def set_local_source(self, source_path, neccessary_index_files: list=None):
+        '''
+        Set a local source for data extraction if neccessary files exists. 
+        '''
+        if source_path is not None:
+            if os.path.exists(source_path):
+                if neccessary_index_files is None:
+                    self.source = source_path
+                    if not self.silent:
+                        print(f"Data source was set to the local path `{source_path}`.")
+                # approve the existence of neccesary inde files.
+                # otherwise we do not trust the local source
+                else:
+                    index_files = [
+                            os.path.join(source_path, index_filename) for
+                            index_filename in neccessary_index_files]
+                    if all([os.path.exists(index_file) in index_files]):
+                        self.source = source_path
+                        if not self.silent:
+                            print("Provided local data source has all neccessary index files "
+                                    f"{', '.join(neccessary_index_files)}. Thus, the data source was "
+                                    f"successfully set to the local path `{source_path}`.")
+                    else:
+                        if not self.silent:
+                            print("Provided local data source does not have all of the neccessary index "
+                                    f"files: {', '.join(neccessary_index_files)}.")
+
+            # source path not valid
+            if not self.silent:
+                print(f"The requested local source path `{source_path}` does "
+                        "not exist.")
+
+        self.source = self.base_url
+        print("The default online source `{self.base_url}` "
+            "will be used instead.")
+## end class ##
+
+
+## helpers ##
 
 # extract year and resolution from an index query
 def _get_resolution_and_date(query):
