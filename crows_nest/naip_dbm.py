@@ -3,6 +3,7 @@
 
 ## package imports ##
 from datetime import date
+import numpy as np
 import os
 import pickle
 import rtree
@@ -172,15 +173,17 @@ class NAIPData(SpatialData):
                     print(f"    - {y.year} ({r} cm): {size} px") 
         return
 
+
     def make_file_name(self, index, total_number):
         '''
-
+        Combine date and location to make a unique filename.
         '''
         today = str(date.today()).replace("-", "_")
         padding = total_number//10 + 1
         file_name = "/".join([self.database_dir, "rgb",
             f"{today}_loc_{str(index+1).zfill(padding)}.tif"])
         return file_name
+
 
     def set_local_source(self, source_path):
         '''
@@ -261,18 +264,24 @@ def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
     tile_intersection = False
     
     # find the dataset of with the best fitting date.
-    # 
-    # if there is no dataset older than the requested
-    # date we prefer to take the oldest.
+    # we define the "best fitting date" by simply
+    # taking the nearest neighbour to the expected
+    # one, no matter in which direction of time
+    get_date_difference = lambda date_x, date_y: (
+            np.abs((date_x - date_y).days)
+            )
+
     dates = [_get_resolution_and_date(tile_index[i][0])[1]
             for i in intersected_indices]
     if strict_date:  # allows to only use dates from the same year.
         dates = filter(lambda x: x.year == date_preferred.year, dates)
-    elif all(map(lambda x: x > date_preferred, dates)):
-        best_date = min(dates)
-    else:
-        dates = filter(lambda x: x <= date_preferred, dates)
-        best_date = max(dates)
+    
+    date_differences = {date_point: get_date_difference(date_point, date_preferred)
+            for date_point in dates} 
+    
+    best_dates = [date_point if date_diff == min(date_differences.values())
+            for date_point, date_diff in date_differences.items()]
+    best_date = min(best_dates)  # by convention we choose the oldest date of all NNs.
 
     # load the tiles which overlap with the location
     for idx in intersected_indices:
