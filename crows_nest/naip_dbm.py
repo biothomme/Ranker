@@ -25,14 +25,12 @@ class NAIPData(SpatialData):
             directory=None, date_given=None, silent=False):
         self.database = "NAIP western europe Azure"
         self.base_url = "https://naipblobs.blob.core.windows.net/naip"
-        
+        self.index_files = ["tile_index.dat", "tile_index.idx", "tiles.p"]
+
         # option to load data from a local source
         # implemented with keeping `self.base_url`, to allow different query architecture
         # between local or online source
-        if source is None:
-            self.source = self.base_url
-        else:
-            self.source = source
+        self.set_local_source(source)
         
         # set root and database dir
         self.set_db_directory(directory)
@@ -118,22 +116,24 @@ class NAIPData(SpatialData):
         existent
         '''
         URL_INDEX = "https://naipeuwest.blob.core.windows.net/naip-index/rtree"
-        INDEX_FILES = ["tile_index.dat", "tile_index.idx", "tiles.p"]
 
-        # initialize db directory
+        # initialize db directory including a `source` subdirectory
+        # which is important if the directory will later be used as
+        # local source.
         if not os.path.exists(self.database_dir):
             print(f"The directory for database '{self.database}' will be"
                     " initialized.")
+        set_directory(self.database_dir, database_name="source")
         
         for feature in self.features:
             if self.features[feature]:
                 set_directory(self.database_dir, database_name=feature)
 
-        # download tile indices which are 3 files as in INDEX_FILES
+        # download tile indices which are 3 files as in self.index_files
         tile_indices_root = os.path.join(self.database_dir, "tile_indices")
         tile_indices_paths = {
                 os.path.join(tile_indices_root, file):
-                "/".join([URL_INDEX, file]) for file in INDEX_FILES}
+                "/".join([URL_INDEX, file]) for file in self.index_files}
         for i, (ti_path, ti_url) in enumerate(tile_indices_paths.items()):
             download_to_path(ti_url, ti_path)
         
@@ -182,37 +182,44 @@ class NAIPData(SpatialData):
             f"{today}_loc_{str(index+1).zfill(padding)}.tif"])
         return file_name
 
-    def set_local_source(self, source_path, neccessary_index_files: list=None):
+    def set_local_source(self, source_path):
         '''
         Set a local source for data extraction if neccessary files exists. 
         '''
+        # TODO TEST IT!
         if source_path is not None:
-            if os.path.exists(source_path):
+            if (os.path.exists(source_path) and 
+                     os.path.exists(os.path.join(source_path, "source"))):
+                # approve local source if no index files are demanded.
                 if neccessary_index_files is None:
                     self.source = source_path
                     if not self.silent:
                         print(f"Data source was set to the local path `{source_path}`.")
-                # approve the existence of neccesary inde files.
+                    return
+
+                # check the existence of neccesary index files (self.index_files).
                 # otherwise we do not trust the local source
                 else:
                     index_files = [
                             os.path.join(source_path, index_filename) for
-                            index_filename in neccessary_index_files]
+                            index_filename in self.index_files]
                     if all([os.path.exists(index_file) in index_files]):
                         self.source = source_path
                         if not self.silent:
                             print("Provided local data source has all neccessary index files "
-                                    f"{', '.join(neccessary_index_files)}. Thus, the data source was "
+                                    f"{', '.join(self.index_files)}. Thus, the data source was "
                                     f"successfully set to the local path `{source_path}`.")
+                        return
                     else:
                         if not self.silent:
                             print("Provided local data source does not have all of the neccessary index "
-                                    f"files: {', '.join(neccessary_index_files)}.")
+                                    f"files: {', '.join(self.index_files)}.")
 
-            # source path not valid
-            if not self.silent:
-                print(f"The requested local source path `{source_path}` does "
-                        "not exist.")
+            # source path not existing
+            else:
+                if not self.silent:
+                    print(f"The requested local source path `{source_path}` or its subdirectory "
+                            f"`{source_path}/source` do not exist.")
 
         self.source = self.base_url
         print("The default online source `{self.base_url}` "
@@ -254,8 +261,7 @@ def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
     tile_intersection = False
     
     # find the dataset of with the best fitting date.
-    # it should be the older or as old than/as the date
-    # requested, but the latest as possible.
+    # 
     # if there is no dataset older than the requested
     # date we prefer to take the oldest.
     dates = [_get_resolution_and_date(tile_index[i][0])[1]
