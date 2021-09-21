@@ -38,13 +38,14 @@ def set_directory(directory, database_name="data_barrel"):
 
 # helper to download a file from url and store it in a given path
 def download_to_path(url, file_path,
-        force=False, silent=True):
+        force=False, silent=True, local_path=False):
     '''
     Download data from a given URL and store it in a given (new) path.
     '''
     from urllib.error import HTTPError
     from urllib.error import URLError
-    
+    from shutil import copy2
+
     PATH_NOT_MADE_MSG = (f"It was not possible to create the given"
             f" path {file_path}.")
     # do not download if file already exists
@@ -58,13 +59,23 @@ def download_to_path(url, file_path,
         # finally download the data
         print(url)
         print(file_path)
-        try:
-            urllib.request.urlretrieve(url, file_path)
-        except (HTTPError, URLError) as err:
-            print(f"The download of {url} failed with {err}")
+        if local_path:
+            try:
+                copy2(url, file_path)
+            except:
+                print(f"It was not possible to load {url} from local source."
+                        if not silent else "", end="")
+            else:
+                print(f"Local data from {url} was loaded into {file_path}.\n"
+                        if not silent else "", end="")
         else:
-            print(f"Data from {url} was retrieved to {file_path}.\n"
-                    if not silent else "", end="")
+            try:
+                urllib.request.urlretrieve(url, file_path)
+            except (HTTPError, URLError) as err:
+                print(f"The download of {url} failed with {err}")
+            else:
+                print(f"Data from {url} was retrieved to {file_path}.\n"
+                        if not silent else "", end="")
     else:
         print(url)
         print(f"{file_path} already exists. It will not be "
@@ -81,10 +92,6 @@ def check_locations_and_dates(locations, dates):
     the same amount of locations and dates given.
     Assign most recent date for all locations if None
     provided
-    Load dates to datetime object and assert that there is
-    the same amount of locations and dates given.
-    Assign most recent date for all locations if None
-    provided.
     '''
     from datetime import date
 
@@ -99,3 +106,46 @@ def check_locations_and_dates(locations, dates):
         print("As no dates were specified the most recent data will"
                 " be fetched.")
     return dates
+
+
+# we want to store metainformation about the data retrieved
+# in a human readable format. thus, csv sheets should be used.
+# with the csv package and a writer-buffer we can add lines
+# synchronically when downloading a sample.
+def write_csv_row(filename, row_dictionary):
+    '''
+    Store information about a sample in a csv file.
+
+    Appending existing file needs to fulfill the criterium
+    of congruent headers. If file does not exist, it will 
+    be initialized.
+    '''
+    import csv
+    
+    # header can be retrieved from the row_dictionary
+    header = row_dictionary.keys()
+
+    if not os.path.exists(filename):
+        with open(filename, "w") as csv_file:
+            csv_writer = csv.DictWriter(
+                    csv_file, fieldnames=header)
+            csv_writer.writeheader()
+        file_header = header
+    else:
+        # avoid to mess up different
+        with open(filename, "r") as csv_file:
+            csv_reader = csv.reader(csv_file)
+            file_header = csv_reader.__next__()
+            if sorted(file_header) != sorted(header):
+                raise RuntimeError(
+                        f"The provided csv file {filename} already " 
+                        "exists and does not have the same headers " 
+                        f"({sorted(file_header)}) as the data given "
+                        f"({sorted(header)}).")
+    # buffer is always opened again, to avoid forgetting to close.
+    with open(filename, "a") as csv_file:
+        csv_writer = csv.DictWriter(csv_file, fieldnames=file_header)
+        csv_writer.writerow(row_dictionary)
+    return
+        
+
