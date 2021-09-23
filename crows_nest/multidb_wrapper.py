@@ -7,7 +7,7 @@ import os
 import shapely
 from datetime import date
 
-import database_classes
+from database_classes import SpatialData
 from utils import set_directory
 from utils import set_locations
 from utils import check_locations_and_dates
@@ -27,30 +27,37 @@ class GetMultiDBData:
     # a the tile size in metres (float)
 
     # constructor
-    def __init__(self, dataminers, directory=None):
-        self.add_dataminers(dataminers)
+    def __init__(self, dataminers, directory=None, tile_size=100):
+        self.tile_size = tile_size
         self.root = set_directory(directory)
         if directory is None:
             self.temporary = True
-
+            
+        self.add_dataminers(dataminers)
+        return
+        
     # add new database miners to list.
     def add_dataminers(self, new_dataminers):
         '''
         Add object(s) of subclasses of database_classes.SpatialData to current list.
         Duplicates are removed.
         '''
-        is_spatialdata = lambda x: isinstance(x, database_classes.SpatialData)
+        is_spatialdata = lambda x: isinstance(x, SpatialData)
         if type(new_dataminers) == list:
             # we need to avoid instances that are no dataminers
             # and initialize a subdirectory within the central
             # multidb directory, if not explicitly wished differently.
             real_dataminers = filter(is_spatialdata, new_dataminers)
             for dataminer in real_dataminers:
+                # standardize tile_size and dir in all dataminers
+                dataminer.set_tile_size(self.tile_size)
                 dataminer.set_db_directory(self.root)
 
             self.dataminers.extend(filter(is_spatialdata, new_dataminers))
         
         elif is_spatialdata(new_dataminers):
+            new_dataminers.set_tile_size(self.tile_size)
+            new_dataminers.set_db_directory(self.root)
             self.dataminers.append(new_dataminers)
         
         else:

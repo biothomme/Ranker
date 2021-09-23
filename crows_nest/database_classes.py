@@ -33,7 +33,7 @@ class SpatialData(metaclass=ABCMeta):
     # produce query, request and store data
     def run(self, locations, dates=None):
         '''
-        try to download data from NAIP for given location.
+        try to download data from defined database for given location.
         '''
         self.authenticate()
         self.size = len(locations)
@@ -61,6 +61,10 @@ class SpatialData(metaclass=ABCMeta):
     # TODO make abstract method to check if data for location is defined
     def check_location(self, location):
         pass
-
+    
+    # allow to change tilesize
+    def set_tile_size(self, tile_size):
+        self.tile_size = tile_size
+        return
 
 
