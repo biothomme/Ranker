@@ -16,6 +16,7 @@ from utils import download_to_path
 from utils import write_csv_row
 from utils import make_csv_path
 from database_classes import SpatialData
+from image_manipulation import FileStitcher
 
 
 ## the class ##
@@ -24,17 +25,6 @@ class NAIPData(SpatialData):
     # https://planetarycomputer.microsoft.com/dataset/naip#Blob-Storage-Notebook
     # Thanks a lot to the authors.
     from utils import set_directory
-    
-    # constant headers for csv files
-    SOURCE_HEADER = [
-            "query_url",  # url of the single query
-            "local_path",  # absolute path where file is stored locally
-            "timestamp_server",  # timestamp of last mod on server
-            "timestamp_fetched",  # timestamp of when file was downloaded
-            "server",  # name of the server
-            "file_type",  # format/type of the file
-            "file_size"  # size of the file in bytes
-            ]
 
     def __init__(self, features=[], source=None, tile_size=100,
             directory=None, date_given=None, silent=False):
@@ -66,9 +56,12 @@ class NAIPData(SpatialData):
                         f"Attention: Expected feature `{feature}`"
                         f" for database `{self.database}` was not found."
                         f" Use one of those: {self.features.keys()}")
+        
+        # define tile metrics and init the stitcher.
         self.tile_size = tile_size
         self.tile_sizes_dict = {}
-    
+        self.tile_stitcher = FileStitcher(tile_size, features)
+
         return
 
     def authenticate(self):
@@ -99,60 +92,34 @@ class NAIPData(SpatialData):
         '''
         Download the data for the NAIP query.
         '''
-        # deal with multiple queries for a single location
-        if type(queries) == list:
-            rawdata_files = []
-            for query in queries:
-                rawdata_files.append(self.get_data(query, file_name, location))
-            # stitch multiple tiles to one
-            # TODO rawdata_file = stitch_tiles(rawdata_files)
-            print(rawdata_files, "---------------------------------------")
-            rawdata_file = rawdata_files[0]
-
-            # stitch the tiles TODO
-        # deal with a single file as @queries; recursively
-        else:
-            rawdata_file = os.path.join(self.database_dir, "source", queries)
-            print(self.source)
-            # run online search if file not in local source:
-            query_url = "/".join([self.source, queries]) 
-            if (self.base_url != self.source and not os.path.exists(query_url)):
-                query_url = "/".join([self.base_url, queries])
-                if not self.silent:
-                    print(f"There was no data for {query_url} within the "
-                            "provided local source. It will be fetched from "
-                            "the online database instead.")
-            ry_tuple = _get_resolution_and_date(queries)
-            
-            # first download the whole image (or load from local source)
+        ry_tuple = _get_resolution_and_date(queries[0])  # TODO is this actually right to do?
+        
+        # first download the whole image (or load from local source)
+        raw_file_names = [os.path.join(self.database_dir, "source", query)
+                for query in queries]
+        query_urls = ["/".join([self.source, query]) for query in queries] 
+        
+        for rd_file, query_url in zip(raw_file_names, query_urls):
             try:
-                request_metainf = download_to_path(query_url, rawdata_file, 
+                request_metainf = download_to_path(query_url, rd_file, 
                         silent=self.silent, 
                         local_path=(self.base_url != self.source))
             except : # WHAT do i want to except? PermissionError? TODO 
                 print(f"Error, it was impossible to download data for the query"
                         f" '{queries}' at location {location}.")
-            else:
-                csv_row_dict = make_source_csv_row(
-                        query_url, rawdata_file, request_metainf)
-                write_csv_row(csvfilename, csv_row_dict)
-            
-            # then try to extract the tile... TODO TODO TODO
-            # TODO : e.g. we could iterate through the features here
-            try:
-                fetch_best_tile(
-                        location, self.tile_sizes_dict[ry_tuple],
-                        query_url, file_name, self.features,
-                        silent=self.silent)
-                # to download whole images use:
-            except: # WHAT do i want to except TODO
-                print(f"Error, it was impossible to download data for the query"
-                        f" '{queries}' at location {location}.")
-            else:
-                csv_row_dict = make_features_csv_row(
-                        )
-                write_csv_row(..., csv_row_dict)
-        return rawdata_file
+        try:
+            image_manipulation = self.tile_stitcher.stitch_image(
+                    location, raw_file_names, file_name_prefix=file_name)
+        except ValueError: # WHAT do i want to except TODO
+            print(f"Error, it was impossible to download data for the query"
+                    f" '{queries}' at location {location}.")
+            image_manipulation = None
+#            else:
+            # TODO
+            #csv_row_dict = make_features_csv_row(
+            #        )
+            #write_csv_row(..., csv_row_dict)
+        return image_manipulation
 
 
     def prepare(self):
@@ -177,18 +144,19 @@ class NAIPData(SpatialData):
         # initiate the source directory (TODO we will not only need that
         # one but also a way to use the local source dir...
         set_directory(self.database_dir, database_name="source")
-        self.csv_index_files["source"] = 
-        source_header_dict = make_source_csv_row()
-        initialize_csvfile(
-                self.database_dir, source_header_dict,
-                database_feature="source")
+        # TODO test:
+        # self.csv_index_files["source"] = 
+        # source_header_dict = make_source_csv_row()
+        # initialize_csvfile(
+        #        self.database_dir, source_header_dict,
+        #        database_feature="source")
 
         for feature in self.features:
             if self.features[feature]:
                 set_directory(self.database_dir, database_name=feature)
-                initialize_csvfile(
-                        self.database_dir, feature_header_dict,
-                        database_feature=feature)
+         #       initialize_csvfile(
+         #               self.database_dir, feature_header_dict,
+         # TODO               database_feature=feature)
         # download tile indices which are 3 files as in self.index_files
         tile_indices_root = os.path.join(self.database_dir, "index_files")
         tile_indices_paths = {
@@ -247,8 +215,8 @@ class NAIPData(SpatialData):
         '''
         today = str(date.today()).replace("-", "_")
         padding = total_number//10 + 1
-        file_name = "/".join([self.database_dir, "rgb",
-            f"{today}_loc_{str(index+1).zfill(padding)}.tif"])
+        file_name = "/".join([self.database_dir, "FEATURE_PLACE_HOLDER",
+            f"{today}_loc_{str(index+1).zfill(padding)}"])
         return file_name
 
 
@@ -366,10 +334,7 @@ def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
             "but no tile completely contains selection")
 
     assert len(queries) > 0, "Location has no intersections with NAIP tiles."
-    if len(queries) == 1:
-        return queries[0]
-    else:
-        return queries
+    return queries
     # copied but adjusted code END
 
 
@@ -451,66 +416,6 @@ def _fetch_geom_dimensions(geom_rectangle):
         geodesic((bounds[1], bounds[0]), (bounds[1], bounds[2])).m])
     return (metric_height, metric_width)
 
-# because this database allows high resolution data, we try to
-# download quadratic tiles of a given size.
-def fetch_best_tile(location, tile_size_pixels, query_url,
-                    file_name, features, silent=True):
-    '''
-    Download a tile of tile_size_pixels x tile_size_pixels of NAIP
-    image centered around location, retrieved from query_url and
-    to be stored as file_name.
-    '''
-    from fiona.transform import transform
-    import numpy as np
-    import rasterio
-
-    IO_CRS = "epsg:4326"
-
-    half_edge = int(tile_size_pixels/2)
-    with rasterio.open(query_url) as image:
-        # here coordinates need to be shifted from the input crs to
-        # the tif image crs and later converted to pixel
-        location_in_img_crs = [p[0] for p in transform(
-            IO_CRS, image.crs.to_string(), [location.x], [location.y])]
-        location_in_img_pix = [
-            int(np.floor(p)) for p in
-            ~image.transform * location_in_img_crs]
-
-        # a window around the tile can be produced
-        wdw = rasterio.windows.Window(
-            location_in_img_pix[0]-half_edge,
-            location_in_img_pix[1]-half_edge,
-            tile_size_pixels, tile_size_pixels)
-        image_tile = image.read(window=wdw)
-
-        kwargs = image.meta.copy()
-        kwargs.update({
-            'height': wdw.height,
-            'width': wdw.width,
-            'transform': rasterio.windows.transform(wdw, image.transform)})
-        
-        # store the tiles in rgb or ir image, if requested
-        for profile, phot_prof in zip(["rgb", "ir"], ["RGB", "Grayscale"]):
-            if features[profile]:
-                try:
-                    with rasterio.open(
-                            file_name.replace("rgb", profile), "w",
-                            photometric=phot_prof, **kwargs) as file:
-                        if profile == "rgb":
-                            file.write(image_tile)
-                        else:  # TODO: how to save as greyscale image?
-                            file.write(image_tile[3] , indexes=1)  # we only store the last layer.
-                except IOError as err:
-                    print(err)
-                    print(f"It was not possible to store the {profile.upper()}"
-                            f" image for tile at location {location}.\n" 
-                            if not silent else "" )
-                else:
-                    print(f"{profile.upper()} image for tile at location" 
-                            f" {location} was successfully downloaded to"
-                            f" {file_name}.\n" if not silent else "", end="")
-    return
-
 
 # helper to make dictionary with metainfo for
 # raw source data.
@@ -590,8 +495,8 @@ def make_features_csv_row(query_url=None, file_name=None,
             ]
     # we can also make empty header dicts
     else:
-        csv_row = [None] * len(SOURCE_HEADER)
+        csv_row = [None] * len(FEATURE_HEADER)
 
     csv_row_dict = {hd: rw for hd, rw in
-            zip(SOURCE_HEADER, csv_row)}
+            zip(FEATURE_HEADER, csv_row)}
     return csv_row_dict

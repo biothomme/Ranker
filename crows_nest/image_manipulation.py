@@ -1,7 +1,7 @@
 # here one can find tools for image manipulation
 import os
 from shapely.geometry import Point
-
+import cv2
 
 ## classes ##
 # important class to stitch multiple images to one
@@ -11,13 +11,11 @@ class FileStitcher:
     Assembler of multiple files to one tile of given
     edgelength in pixel centered around a location.
     '''
-    def __init__(self, location, tile_size_in_pixels,
-                features):
+    def __init__(self, tile_size_in_pixels, features):
         '''
-        Construct with locations (shapely.geometry.Point) and 
+        Construct with database features and 
         tile sizes given.
         '''
-        self.location = location
         self.tile_size = tile_size_in_pixels
         self.features = features
         self.stitcher = cv2.Stitcher_create()
@@ -25,11 +23,10 @@ class FileStitcher:
         return
     
     
-    def stitch_image(self, list_of_images: list, file_name_prefix=None):
+    def stitch_image(self, location, list_of_images: list, file_name_prefix=None):
         '''
         Extract and stitch (if neccessary) tile from image(s).
         '''
-        import cv2
         from shutil import copyfile
 
         # we construct file name from location and tilesize.
@@ -37,42 +34,55 @@ class FileStitcher:
         if file_name_prefix is None:
             filepath_prefix = os.path.join(
                 os.getcwd(),
-                f"{_stringisize_point(self.location)}_{self.tile_size}px")
+                f"{_stringisize_point(location)}_{self.tile_size}px")
         else:
-            filepath_prefix = os.path(file_name_prefix)
+            filepath_prefix = os.path.abspath(file_name_prefix)
         # first temporary tile_fragments are produced from all
         # raw images and stored feature specifically.
+        print(list_of_images)
         temp_images = []
         stitch_images = []
         manipulations = {}
-        for image in list_of_images:
+        for image_path in list_of_images:
             temp_images.append(
-                self.make_temp_image(image))
+                self.make_temp_image(location, image_path))
         # then for each feature all images are merged
         for feature in self.features:
-            final_image_name = f"{filepath_prefix}_{feature}.tif"
+            final_image_name = f"{filepath_prefix}.tif".replace(
+                    "FEATURE_PLACE_HOLDER", feature)
             manipulations[final_image_name] = []
-
             temp_images_feature = [
-                loc_img[feature] for loc_img in temp_images]
-
-
+                loc_img[feature][0] for loc_img in temp_images]
+            
+            full_images = {li: ti[feature][0]
+                for li, ti in zip(list_of_images, temp_images)
+                           if ti[feature][1]
+            }
             # single files do not need to be stitched
             # TODO: we would need a checker if all images have
             # required size
             if len(temp_images_feature) == 1:
-                copyfile(temp_images_feature.name, final_image_name)
-            
-            # stitch multiple files
+                copyfile(temp_images_feature[0].name, final_image_name)
+                manipulations[final_image_name].append("None")
+            # we use a single file, if there is one with
+            # the full size TODO sort by name
+            elif len(full_images) > 0:
+                print("full tile was given")
+                chosen_rawfile = sorted(list(full_images.keys()))[0]
+                chosen_tile_file = full_images[chosen_rawfile]
+                copyfile(chosen_tile_file.name, final_image_name)
+                manipulations[final_image_name].append(
+                    f"chosen_file_{chosen_rawfile}")
+            # stitch multiple tiles
             else:
                 opened_images = [
                     cv2.imread(img.name)
                     for img in temp_images_feature]
-                
+                print([img.name for img in temp_images_feature])                
                 (status, stitched_image) = self.stitcher.stitch(opened_images)
-                
+                print(status, stitched_image) 
                 assert status == 0, (
-                    f"Image stitching for location {self.location} "
+                    f"Image stitching for location {location} "
                     "was not successful."
                 )
                 manipulations[final_image_name].append(f"stitched{len(opened_images)}")
@@ -95,22 +105,22 @@ class FileStitcher:
         return manipulations
     
     
-    def make_temp_image(self, image_path):
+    def make_temp_image(self, location, image_path):
         '''
         Extract the focal tile (often partial) from a given image and store it.
         '''
         from fiona.transform import transform
-        from tempfile import TemporaryFile
+        from tempfile import NamedTemporaryFile
         import numpy as np
         import rasterio
 
         IO_CRS = "epsg:4326"
 
         file_name_suffix = "_".join([
-            _stringisize_point(self.location),
+            _stringisize_point(location),
             f"{self.tile_size}px"])
         file_name = image_path.replace(
-            ".tif", f"{file_name_suffix}_rgb")
+            ".tif", f"{file_name_suffix}_FEATURE_PLACE_HOLDER")
 
         # we will work a lot with the half tile size
         half_edge = int(self.tile_size/2)
@@ -120,7 +130,7 @@ class FileStitcher:
             # the tif image crs and later converted to pixel
             location_in_img_crs = [p[0] for p in transform(
                 IO_CRS, image.crs.to_string(),
-                [self.location.x], [self.location.y])]
+                [location.x], [location.y])]
             location_in_img_pix = [
                 int(np.floor(p)) for p in
                 ~image.transform * location_in_img_crs]
@@ -162,10 +172,13 @@ class FileStitcher:
             images_produced = {}
         for profile, phot_prof in zip(["rgb", "ir"], ["RGB", "Grayscale"]):
             if profile in self.features:
+                full_size = (image_tile.shape[1] == self.tile_size and
+                             image_tile.shape[2] == self.tile_size)
+                print(full_size)
                 try:
                     temp_image = NamedTemporaryFile(
                         mode="w",
-                        prefix=file_name.replace("rgb", profile),
+                        prefix=file_name.replace("FEATURE_PLACE_HOLDER", profile),
                         dir=".",
                     suffix=".tif")
                     with rasterio.open(
@@ -178,7 +191,7 @@ class FileStitcher:
                 except IOError as err:
                     pass
                 else:
-                    images_produced[profile] = temp_image
+                    images_produced[profile] = (temp_image, full_size)
 
         return images_produced
 
@@ -194,3 +207,9 @@ def _stringisize_point(shapely_point):
         str(shapely_point.y).replace(".", "_").replace("-", "m"), "N",
         str(shapely_point.x).replace(".", "_").replace("-", "m"), "E"])
     return point_as_string
+
+def _check_if_image_has_tile_size(rasterio_image_wrapper, tile_edge_size):
+    '''
+    Check if an image tile has the actual tile_edge_size (as square).
+    '''
+    cv.imread(image)
