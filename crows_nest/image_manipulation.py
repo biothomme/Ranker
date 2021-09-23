@@ -30,7 +30,7 @@ class FileStitcher:
         Extract and stitch (if neccessary) tile from image(s).
         '''
         import cv2
-        
+        from shutil import copyfile
 
         # we construct file name from location and tilesize.
         # onecould add date
@@ -50,34 +50,44 @@ class FileStitcher:
                 self.make_temp_image(image))
         # then for each feature all images are merged
         for feature in self.features:
-            stitch_name = f"{filepath_prefix}_{feature}.tif"
-            manipulations[stitch_name] = []
+            final_image_name = f"{filepath_prefix}_{feature}.tif"
+            manipulations[final_image_name] = []
 
             temp_images_feature = [
                 loc_img[feature] for loc_img in temp_images]
 
-            opened_images = [
-                cv2.imread(img.name)
-                for img in temp_images_feature]
 
-            (status, stitched_image) = self.stitcher.stitch(opened_images)
-            assert status == 0, (
-                f"Image stitching for location {self.location} "
-                "was not successful."
-            )
-            manipulations[stitch_name].append(f"stitched{len(opened_images)}")
+            # single files do not need to be stitched
+            # TODO: we would need a checker if all images have
+            # required size
+            if len(temp_images_feature) == 1:
+                copyfile(temp_images_feature.name, final_image_name)
             
-            # some images do not fit the pixel dimensions anymore
-            if (stitched_image.shape[0] != self.tile_size or
-                stitched_image.shape[0] != self.tile_size):
-                final_image = cv2.resize(stitched_image,
-                                         (self.tile_size, self.tile_size))
-                manipulations[stitch_name].append(f"resized")
+            # stitch multiple files
             else:
-                final_image = stitched_image
+                opened_images = [
+                    cv2.imread(img.name)
+                    for img in temp_images_feature]
+                
+                (status, stitched_image) = self.stitcher.stitch(opened_images)
+                
+                assert status == 0, (
+                    f"Image stitching for location {self.location} "
+                    "was not successful."
+                )
+                manipulations[final_image_name].append(f"stitched{len(opened_images)}")
+                
+                # some images do not fit the pixel dimensions anymore
+                if (stitched_image.shape[0] != self.tile_size or
+                    stitched_image.shape[0] != self.tile_size):
+                    final_image = cv2.resize(stitched_image,
+                                             (self.tile_size, self.tile_size))
+                    manipulations[final_image_name].append(f"resized")
+                else:
+                    final_image = stitched_image
 
-            cv2.imwrite(stitch_name, final_image)
-            
+                cv2.imwrite(final_image_name, final_image)
+                
             # lastly remove temporary images
             for temp_img in temp_images_feature:
                 temp_img.close()
