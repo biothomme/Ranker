@@ -41,6 +41,8 @@ def download_to_path(url, file_path,
         force=False, silent=True, local_path=False):
     '''
     Download data from a given URL and store it in a given (new) path.
+    
+    The request header (metadata) will be retured as a dictionary.
     '''
     from urllib.error import HTTPError
     from urllib.error import URLError
@@ -59,6 +61,7 @@ def download_to_path(url, file_path,
         # finally download the data
         print(url)
         print(file_path)
+        # TODO do we actually need this?
         if local_path:
             try:
                 copy2(url, file_path)
@@ -69,18 +72,20 @@ def download_to_path(url, file_path,
                 print(f"Local data from {url} was loaded into {file_path}.\n"
                         if not silent else "", end="")
         else:
+        # TODO end
             try:
-                urllib.request.urlretrieve(url, file_path)
+                fp, headers = urllib.request.urlretrieve(url, file_path)
             except (HTTPError, URLError) as err:
                 print(f"The download of {url} failed with {err}")
             else:
                 print(f"Data from {url} was retrieved to {file_path}.\n"
                         if not silent else "", end="")
+            return headers
     else:
         print(url)
         print(f"{file_path} already exists. It will not be "
             "overwritten.\n" if not silent else "", end="")
-        return
+        return None
 
 
 # helper to check if dates and locations list is of equal
@@ -148,4 +153,35 @@ def write_csv_row(filename, row_dictionary):
         csv_writer.writerow(row_dictionary)
     return
         
+# helper for meta information files that track database requests etc.
+def make_csv_path(base_path, database_name):
+    '''
+    Get standardized name for csv file that should store metainformation.
+    '''
+    file_path = os.path.join(
+            base_path, "_".join([database_name, "index.csv"]))
+    return file_path
 
+
+# helper to get informations about an image:
+def retrieve_image_info(image_file_path):
+    '''
+    Collect basic information about an image file and store in a dictionary.
+    '''
+    from PIL import Image
+    image_info_dict = {}
+    DICT_HEADER = ["format", "mode", "pixel_size", "timestamp_created", "file_size"]
+    try:
+        with Image.open(image_file_path) as image:
+            image_info_dict["format"] = image.format
+            image_info_dict["mode"] = image.mode
+            image_info_dict["pixel_size"] = "x".join([str(x) for x in image.size])
+    except IOError:
+        image_info_dict = {info: "NA" for info in DICT_HEADER}
+    try:
+        image_info_dict["timestamp_created"] = os.path.getctime(image_file_path)
+        image_info_dict["file_size"] = os.path.getsize(image_file_path)
+    except IOError:
+        pass
+    return image_info_dict
+    
