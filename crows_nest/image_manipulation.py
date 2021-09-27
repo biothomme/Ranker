@@ -43,14 +43,29 @@ class FileStitcher:
         temp_images = []
         stitch_images = []
         manipulations = {}
+        
+        # to avoid extracting tiles from all images,
+        # if we already retrieved a full one, we 
+        # break the loop and memorize that:
+        full_tile_in_list_last = False
+        
         for image_path in list_of_images:
-            temp_images.append(
-                self.make_temp_image(location, image_path))
+            temp_image_dict = self.make_temp_image(location, image_path)
+            temp_images.append(temp_image_dict)
+            # we assume that if one tile is fully given for one 
+            # feature, then for all features.
+            if temp_image_dict[self.features[0]][1]:
+                full_tile_in_list_last = True
+                break
+
         # then for each feature all images are merged
         for feature in self.features:
             final_image_name = f"{filepath_prefix}.tif".replace(
                     "FEATURE_PLACE_HOLDER", feature)
-            manipulations[final_image_name] = []
+            
+            # completeness, manipulations and source images are memorized
+            manipulations[final_image_name] = {}
+            
             temp_images_feature = [
                 loc_img[feature][0] for loc_img in temp_images]
             
@@ -58,41 +73,44 @@ class FileStitcher:
                 for li, ti in zip(list_of_images, temp_images)
                            if ti[feature][1]
             }
+            print("file saved: ", final_image_name)
+            # no stitch for full images
+            if full_tile_in_list_last:
+                print("complete tile was given")
+                chosen_rawfile = list_of_images[len(temp_images_feature)-1]
+                chosen_tile_file = temp_images_feature[-1]
+                copyfile(chosen_tile_file.name, final_image_name)
+                manipulations[final_image_name]["completeness"] = "complete"
+                manipulations[final_image_name]["manipulations"] = "none"
+                manipulations[final_image_name]["source_file"] = chosen_rawfile
             # single files do not need to be stitched
             # TODO: we would need a checker if all images have
             # required size
-            if len(temp_images_feature) == 1:
+            elif len(temp_images_feature) == 1:
+                print("single incomplete tile was given")
                 copyfile(temp_images_feature[0].name, final_image_name)
-                manipulations[final_image_name].append("None")
-            # we use a single file, if there is one with
-            # the full size TODO sort by name
-            elif len(full_images) > 0:
-                print("full tile was given")
-                chosen_rawfile = sorted(list(full_images.keys()))[0]
-                chosen_tile_file = full_images[chosen_rawfile]
-                copyfile(chosen_tile_file.name, final_image_name)
-                manipulations[final_image_name].append(
-                    f"chosen_file_{chosen_rawfile}")
+                manipulations[final_image_name]["completeness"] = "incomplete"
+                manipulations[final_image_name]["manipulations"] = "none"
+                manipulations[final_image_name]["source_file"] = list_of_images[0]
             # stitch multiple tiles
             else:
                 opened_images = [
                     cv2.imread(img.name)
                     for img in temp_images_feature]
-                print([img.name for img in temp_images_feature])                
                 (status, stitched_image) = self.stitcher.stitch(opened_images)
-                print(status, stitched_image) 
                 assert status == 0, (
                     f"Image stitching for location {location} "
                     "was not successful."
                 )
-                manipulations[final_image_name].append(f"stitched{len(opened_images)}")
-                
+                manipulations[final_image_name]["completeness"] = "complete"
+                manipulations[final_image_name]["manipulations"] = "stitched"
+                manipulations[final_image_name]["source_file"] = "|".join(list_of_images)
                 # some images do not fit the pixel dimensions anymore
                 if (stitched_image.shape[0] != self.tile_size or
                     stitched_image.shape[0] != self.tile_size):
                     final_image = cv2.resize(stitched_image,
                                              (self.tile_size, self.tile_size))
-                    manipulations[final_image_name].append(f"resized")
+                    manipulations[final_image_name]["manipulations"] += "+resized"
                 else:
                     final_image = stitched_image
 
