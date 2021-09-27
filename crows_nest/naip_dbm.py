@@ -11,10 +11,11 @@ import rtree
 
 
 ## local imports ##
-from utils import set_directory
 from utils import download_to_path
-from utils import write_csv_row
 from utils import make_csv_path
+from utils import retrieve_image_info
+from utils import set_directory
+from utils import write_csv_row
 from database_classes import SpatialData
 from image_manipulation import FileStitcher
 
@@ -88,7 +89,7 @@ class NAIPData(SpatialData):
         return queries
 
 
-    def get_data(self, queries, file_name, location):
+    def get_data(self, queries, file_name, location, date_given):
         '''
         Download the data for the NAIP query.
         '''
@@ -104,9 +105,17 @@ class NAIPData(SpatialData):
                 request_metainf = download_to_path(query_url, rd_file, 
                         silent=self.silent, 
                         local_path=(self.base_url != self.source))
-            except : # WHAT do i want to except? PermissionError? TODO 
+            except: # WHAT do i want to except? PermissionError? TODO 
                 print(f"Error, it was impossible to download data for the query"
                         f" '{queries}' at location {location}.")
+            else:
+                try:  # we do not need to do that if file already exists - also we would have an error
+                    csv_row_dict = make_source_csv_row(query_url=query_url,
+                                    file_name=rd_file, meta_information_dict=request_metainf)
+                except:
+                    pass
+                else:
+                    write_csv_row(self.csv_index_files["source"], csv_row_dict)
         try:
             image_manipulation = self.tile_stitcher.stitch_image(
                     location, raw_file_names, file_name_prefix=file_name)
@@ -114,12 +123,18 @@ class NAIPData(SpatialData):
             print(f"Error, it was impossible to download data for the query"
                     f" '{queries}' at location {location}.")
             image_manipulation = None
-#            else:
+        else:
             # TODO
-            #csv_row_dict = make_features_csv_row(
-            #        )
-            #write_csv_row(..., csv_row_dict)
-        return image_manipulation
+            for feature in self.features:
+                final_file_name = f"{file_name}.tif".replace(
+                    "FEATURE_PLACE_HOLDER", feature)  # same as in image_manipulation.py
+                csv_row_dict = make_features_csv_row(
+                    location=location, date_requested=date_given, tile_size=self.tile_size,
+                    file_name=final_file_name, manipulation_dict=image_manipulation[final_file_name]
+                )
+                write_csv_row(self.csv_index_files[feature], csv_row_dict)
+        
+        return
 
 
     def prepare(self):
@@ -133,7 +148,7 @@ class NAIPData(SpatialData):
         # which is important if the directory will later be used as
         # local source.
         if not os.path.exists(self.database_dir):
-            print(f"The directory for database '{self.database}' will be"
+            print(f"The directory for database {self.database} will be"
                     " initialized.")
 
         # subsequently we will collect filenames for csvs containing
@@ -145,18 +160,19 @@ class NAIPData(SpatialData):
         # one but also a way to use the local source dir...
         set_directory(self.database_dir, database_name="source")
         # TODO test:
-        # self.csv_index_files["source"] = 
-        # source_header_dict = make_source_csv_row()
-        # initialize_csvfile(
-        #        self.database_dir, source_header_dict,
-        #        database_feature="source")
+        source_header_dict = make_source_csv_row()
+        self.csv_index_files["source"] = self.initialize_csvfile(
+               self.database_dir, source_header_dict,
+               database_feature="source")
 
         for feature in self.features:
             if self.features[feature]:
                 set_directory(self.database_dir, database_name=feature)
-         #       initialize_csvfile(
-         #               self.database_dir, feature_header_dict,
-         # TODO               database_feature=feature)
+                feature_header_dict = make_features_csv_row()
+                self.csv_index_files[feature] = self.initialize_csvfile(
+                    self.database_dir, feature_header_dict,  # TODO adjust to source
+                    database_feature=feature)
+        
         # download tile indices which are 3 files as in self.index_files
         tile_indices_root = os.path.join(self.database_dir, "index_files")
         tile_indices_paths = {
@@ -201,12 +217,18 @@ class NAIPData(SpatialData):
         return
 
     # TODO move to database_classes.py
-    def initialize_csvfile(source_path, header_dict, database_feature=None):
+    def initialize_csvfile(self, source_path, header_dict, database_feature=None):
         '''
         Initialize a csv file that will serve as an index/meta_information
         storage for data fetched.
         '''
-        # TODO
+        csv_file_name = os.path.join(
+            source_path,
+            database_feature,
+            f"index_{self.database.lower().replace(' ', '_')}_{database_feature}.csv"
+        )
+        write_csv_row(csv_file_name, header_dict)
+        return csv_file_name
 
 
     def make_file_name(self, index, total_number):
@@ -261,7 +283,7 @@ class NAIPData(SpatialData):
                             f"`{source_path}/source` do not exist.")
 
         self.source = self.base_url
-        print("The default online source `{self.base_url}` "
+        print(f"The default online source `{self.base_url}` "
             "will be used instead.")
 ## end class ##
 
@@ -458,8 +480,8 @@ def make_source_csv_row(query_url=None, file_name=None,
     return csv_row_dict
 
 
-def make_features_csv_row(query_url=None, file_name=None,
-        meta_information_dict=None):
+def make_features_csv_row(location=None, date_requested=None, tile_size=None,
+                          file_name=None, manipulation_dict=None):
     '''
     Make dictionary sharing metainf about the processed data
     of a given feature + database.
@@ -467,6 +489,8 @@ def make_features_csv_row(query_url=None, file_name=None,
     The information should be stored in the feature specific
     index csv file.
     '''
+    import re
+
     FEATURE_HEADER = [
         "location",  # coordinates of the request
         "date_requested",  # date which was requested
@@ -474,6 +498,7 @@ def make_features_csv_row(query_url=None, file_name=None,
         "tilesize",  # metric edgelength of tile
         "file_path",  # absolute path of the file
         "manipulation",  # information about processing of raw file(s)
+        "completeness",  # tells if complete tile was retrieved
         "source",  # path(s)/url(s) of raw data used to obtain file
         "timestamp_create",  # timestamp of when file was created
         "file_type",  # format/type of the file
@@ -481,17 +506,29 @@ def make_features_csv_row(query_url=None, file_name=None,
         "image_size",  # size of image in pixels
         "image_mode"  # information about the image profile
     ]
-    if query_url is not None:
-        csv_row = [  # same order as @SOURCE_HEADER
-            query_url,  # query_url
-            file_name,  # local_path
-            str(parser.parse(
-                meta_information_dict["Last-Modified"])),  # timestamp_server
-            str(parser.parse(
-                meta_information_dict["Date"])),  # timestamp_fetched
-            meta_information_dict["Server"],  # server
-            meta_information_dict["Content-Type"],  # file_type
-            meta_information_dict["Content-Length"]  # file_size
+    REGEX = "[a-zA-Z]_[0-9]*_[a-zA-Z]{2}_[0-9]*_[0-9]{3}_[0-9]*"
+    
+    if manipulation_dict is not None:
+        # dates of image capture are obtained from raw file names 
+        raw_files = manipulation_dict["source_file"]
+        substr_obtained = map(lambda x: x.split("_")[-1], re.findall(REGEX, raw_files))
+        dates_obtained = map(lambda x: parser.parse(x).date(), substr_obtained)
+        datestr_obtained =  "|".join([str(d) for d in dates_obtained])
+        image_info_dict = retrieve_image_info(file_name) 
+        csv_row = [  # same order as @FEATURE_HEADER
+            location,  # location
+            str(date_requested),  # date_requested
+            datestr_obtained,  # date_obtained
+            tile_size,  # tilesize
+            file_name,  # file_path
+            manipulation_dict["manipulations"],  # manipulation
+            manipulation_dict["completeness"],  # completeness
+            raw_files,  # source
+            image_info_dict["timestamp_created"],  # timestamp_create
+            image_info_dict["format"],  # file_type
+            image_info_dict["file_size"],  # file_size
+            image_info_dict["pixel_size"],  # image_size
+            image_info_dict["mode"]  # image_mode
             ]
     # we can also make empty header dicts
     else:
