@@ -45,7 +45,8 @@ class SpatialData(metaclass=ABCMeta):
             file_name = self.make_file_name(idx, self.size)
             queries = self.build_query(location, dt)
             print(queries)
-            data_files = self.get_data(queries, file_name, location)
+            data_files = self.get_data(queries, file_name, location, dt)
+            
         return
 
     # set a directory for databaseminer class and store in self
