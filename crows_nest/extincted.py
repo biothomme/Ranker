@@ -101,3 +101,65 @@ def _test_inverse_haversine(point, new_value, distance, latitude=True):
                                  "tile size to pixel size. It was not possible to "
                                  "accurately transform tile size to degree format."))
     return
+
+
+# This function was part of NAIP before tiles were stitched...
+# because this database allows high resolution data, we try to
+# download quadratic tiles of a given size.
+def fetch_best_tile(location, tile_size_pixels, rawdata_path,
+                    file_name, features, silent=True):
+    '''
+    Download a tile of tile_size_pixels x tile_size_pixels of NAIP
+    image centered around location, retrieved from query_url and
+    to be stored as file_name.
+    '''
+    from fiona.transform import transform
+    import numpy as np
+    import rasterio
+
+    IO_CRS = "epsg:4326"
+
+    half_edge = int(tile_size_pixels/2)
+    with rasterio.open(rawdata_path) as image:
+        # here coordinates need to be shifted from the input crs to
+        # the tif image crs and later converted to pixel
+        location_in_img_crs = [p[0] for p in transform(
+            IO_CRS, image.crs.to_string(), [location.x], [location.y])]
+        location_in_img_pix = [
+            int(np.floor(p)) for p in
+            ~image.transform * location_in_img_crs]
+
+        # a window around the tile can be produced
+        wdw = rasterio.windows.Window(
+            location_in_img_pix[0]-half_edge,
+            location_in_img_pix[1]-half_edge,
+            tile_size_pixels, tile_size_pixels)
+        image_tile = image.read(window=wdw)
+
+        kwargs = image.meta.copy()
+        kwargs.update({
+            'height': wdw.height,
+            'width': wdw.width,
+            'transform': rasterio.windows.transform(wdw, image.transform)})
+        
+        # store the tiles in rgb or ir image, if requested
+        for profile, phot_prof in zip(["rgb", "ir"], ["RGB", "Grayscale"]):
+            if features[profile]:
+                try:
+                    with rasterio.open(
+                            file_name.replace("rgb", profile), "w",
+                            photometric=phot_prof, **kwargs) as file:
+                        if profile == "rgb":
+                            file.write(image_tile)
+                        else:  # TODO: how to save as greyscale image?
+                            file.write(image_tile[3] , indexes=1)  # we only store the last layer.
+                except IOError as err:
+                    print(err)
+                    print(f"It was not possible to store the {profile.upper()}"
+                            f" image for tile at location {location}.\n" 
+                            if not silent else "" )
+                else:
+                    print(f"{profile.upper()} image for tile at location" 
+                            f" {location} was successfully downloaded to"
+                            f" {file_name}.\n" if not silent else "", end="")
+    return
