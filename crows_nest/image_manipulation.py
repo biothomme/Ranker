@@ -3,6 +3,9 @@ import os
 from shapely.geometry import Point
 import cv2
 
+from utils import coordinatify_point
+
+
 ## classes ##
 # important class to stitch multiple images to one
 # e.g. useful for NAIP data
@@ -11,7 +14,7 @@ class FileStitcher:
     Assembler of multiple files to one tile of given
     edgelength in pixel centered around a location.
     '''
-    def __init__(self, tile_size_in_pixels, features):
+    def __init__(self, tile_size_in_pixels, features, silent=True):
         '''
         Construct with database features and 
         tile sizes given.
@@ -19,6 +22,8 @@ class FileStitcher:
         self.tile_size = tile_size_in_pixels
         self.features = features
         self.stitcher = cv2.Stitcher_create()
+        
+        self.silent = silent
 
         return
     
@@ -39,7 +44,6 @@ class FileStitcher:
             filepath_prefix = os.path.abspath(file_name_prefix)
         # first temporary tile_fragments are produced from all
         # raw images and stored feature specifically.
-        print(list_of_images)
         temp_images = []
         stitch_images = []
         manipulations = {}
@@ -48,7 +52,7 @@ class FileStitcher:
         # if we already retrieved a full one, we 
         # break the loop and memorize that:
         full_tile_in_list_last = False
-        
+
         for image_path in list_of_images:
             temp_image_dict = self.make_temp_image(location, image_path)
             temp_images.append(temp_image_dict)
@@ -73,10 +77,12 @@ class FileStitcher:
                 for li, ti in zip(list_of_images, temp_images)
                            if ti[feature][1]
             }
-            print("file saved: ", final_image_name)
+            if not self.silent:
+                print(f"File saved: {final_image_name}...")
             # no stitch for full images
             if full_tile_in_list_last:
-                print("complete tile was given")
+                if not self.silent:
+                    print("... complete tile was given")
                 chosen_rawfile = list_of_images[len(temp_images_feature)-1]
                 chosen_tile_file = temp_images_feature[-1]
                 copyfile(chosen_tile_file.name, final_image_name)
@@ -87,7 +93,8 @@ class FileStitcher:
             # TODO: we would need a checker if all images have
             # required size
             elif len(temp_images_feature) == 1:
-                print("single incomplete tile was given")
+                if not self.silent:
+                    print("... single incomplete tile was given")
                 copyfile(temp_images_feature[0].name, final_image_name)
                 manipulations[final_image_name]["completeness"] = "incomplete"
                 manipulations[final_image_name]["manipulations"] = "none"
@@ -119,7 +126,7 @@ class FileStitcher:
             # lastly remove temporary images
             for temp_img in temp_images_feature:
                 temp_img.close()
-        
+
         return manipulations
     
     
@@ -186,24 +193,24 @@ class FileStitcher:
                 'height': wdw.height,
                 'width': wdw.width,
                 'transform': rasterio.windows.transform(wdw, image.transform)})
-                # store the tiles in rgb or ir image, if requested
+            # store the tiles in rgb or ir image, if requested
             images_produced = {}
         for profile, phot_prof in zip(["rgb", "ir"], ["RGB", "Grayscale"]):
             if profile in self.features:
                 full_size = (image_tile.shape[1] == self.tile_size and
                              image_tile.shape[2] == self.tile_size)
-                print(full_size)
                 try:
                     temp_image = NamedTemporaryFile(
                         mode="w",
                         prefix=file_name.replace("FEATURE_PLACE_HOLDER", profile),
                         dir=".",
                     suffix=".tif")
+                    kwargs['count'] = 3 if profile == "rgb" else 1
                     with rasterio.open(
                             temp_image.name, "w",
                             photometric=phot_prof, **kwargs) as file:
                         if profile == "rgb":
-                            file.write(image_tile)
+                            file.write(image_tile[0:3])
                         else:  # TODO: how to save as greyscale image?
                             file.write(image_tile[3] , indexes=1)  # we only store the last layer.
                 except IOError as err:
@@ -221,13 +228,15 @@ def _stringisize_point(shapely_point):
     
     If negative coordinates are given, we use m instead of minus.
     '''
-    point_as_string = "_".join([
-        str(shapely_point.y).replace(".", "_").replace("-", "m"), "N",
-        str(shapely_point.x).replace(".", "_").replace("-", "m"), "E"])
+    point_as_string = coordinatify_point(shapely_point).replace(
+        ".", "_").replace(" ", "_").replace("°", "_").replace(",", "_").replace("-", "m")
+
     return point_as_string
+
 
 def _check_if_image_has_tile_size(rasterio_image_wrapper, tile_edge_size):
     '''
     Check if an image tile has the actual tile_edge_size (as square).
     '''
-    cv.imread(image)
+    image = cv.imread(image)
+    return (image.shape[0] == tile_edge_size and image.shape[1] == tile_edge_size)
