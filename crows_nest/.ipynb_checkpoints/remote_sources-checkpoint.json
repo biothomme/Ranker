@@ -1,0 +1,17 @@
+{
+    "NAIP western europe Azure": {
+        "url": "https://naipblobs.blob.core.windows.net/naip",
+        "index": {
+            "url": "https://naipeuwest.blob.core.windows.net/naip-index/rtree",
+            "index_files": [
+                "tile_index.dat",
+                "tile_index.idx",
+                "tiles.p"
+            ]
+        },
+        "features": [
+            "rgb",
+            "ir"
+        ]
+    }
+}
