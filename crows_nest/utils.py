@@ -20,7 +20,7 @@ def set_locations(longitudes, latitudes):
     return locations
 
 # helper for initialization of directory
-def set_directory(directory, database_name="data_barrel"):
+def set_directory(directory=None, database_name="data_barrel"):
     '''
     Set/Make a given directory and return it.
     If None is given, a temporary directory will be returned.
@@ -59,8 +59,6 @@ def download_to_path(url, file_path,
         assert os.path.exists(parent_dir), PATH_NOT_MADE_MSG
         
         # finally download the data
-        print(url)
-        print(file_path)
         # TODO do we actually need this?
         if local_path:
             try:
@@ -82,7 +80,6 @@ def download_to_path(url, file_path,
                         if not silent else "", end="")
             return headers
     else:
-        print(url)
         print(f"{file_path} already exists. It will not be "
             "overwritten.\n" if not silent else "", end="")
         return None
@@ -137,7 +134,7 @@ def write_csv_row(filename, row_dictionary):
             csv_writer.writeheader()
         file_header = header
     else:
-        # avoid to mess up different
+        # avoid to mess up different csv structures
         with open(filename, "r") as csv_file:
             csv_reader = csv.reader(csv_file)
             file_header = csv_reader.__next__()
@@ -148,9 +145,10 @@ def write_csv_row(filename, row_dictionary):
                         f"({sorted(file_header)}) as the data given "
                         f"({sorted(header)}).")
     # buffer is always opened again, to avoid forgetting to close.
-    with open(filename, "a") as csv_file:
-        csv_writer = csv.DictWriter(csv_file, fieldnames=file_header)
-        csv_writer.writerow(row_dictionary)
+    if not all([x is None for x in row_dictionary.values()]):
+        with open(filename, "a") as csv_file:
+            csv_writer = csv.DictWriter(csv_file, fieldnames=file_header)
+            csv_writer.writerow(row_dictionary)
     return
         
 # helper for meta information files that track database requests etc.
@@ -169,19 +167,44 @@ def retrieve_image_info(image_file_path):
     Collect basic information about an image file and store in a dictionary.
     '''
     from PIL import Image
+    DICT_ASSIGNMENT_DICT = {
+        "format": (lambda x: x.format, None),  # to get attr from PIL image
+        "mode": (lambda x: x.mode, None),
+        "pixel_size": (lambda x: x.size, None),
+        "timestamp_created": (os.path.getctime, image_file_path),
+        "file_size": (os.path.getsize, image_file_path)
+    }
+
     image_info_dict = {}
-    DICT_HEADER = ["format", "mode", "pixel_size", "timestamp_created", "file_size"]
-    try:
-        with Image.open(image_file_path) as image:
-            image_info_dict["format"] = image.format
-            image_info_dict["mode"] = image.mode
-            image_info_dict["pixel_size"] = "x".join([str(x) for x in image.size])
-    except IOError:
-        image_info_dict = {info: "NA" for info in DICT_HEADER}
-    try:
-        image_info_dict["timestamp_created"] = os.path.getctime(image_file_path)
-        image_info_dict["file_size"] = os.path.getsize(image_file_path)
-    except IOError:
-        pass
+
+    with Image.open(image_file_path) as image:
+        for prop in DICT_ASSIGNMENT_DICT:
+            fun, attr = DICT_ASSIGNMENT_DICT[prop]
+            if attr is None:
+                attr = image
+            image_info_dict[prop] = _image_info_helper1(fun, attr)
+
     return image_info_dict
+
+
     
+def coordinatify_point(shapely_point):
+    '''
+    Create a readable coordinate string from a shapely point.
+    '''
+    coordinate_point = f"{shapely_point.y}°N, {shapely_point.x}°E"
+    return coordinate_point
+
+# HELPERS:
+# get properties of given image if possible.
+def _image_info_helper1(function_to_catch, value_to_run):
+    try:
+        prop_value = function_to_catch(value_to_run)
+    except IOError:
+        prop_value = "NA"
+    except AttributeError:
+        prop_value = "NA"
+    else:
+        if isinstance(prop_value, list):
+            prop_value = "x".join(prop_value)
+    return prop_value

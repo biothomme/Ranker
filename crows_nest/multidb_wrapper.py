@@ -14,22 +14,15 @@ from utils import check_locations_and_dates
 
 # core class
 class GetMultiDBData:
-    # the most necessary parameters are locations (shapely.Point
-    # or list of it) and a root directory (str) to store the data in.
-    root = None
-    temporary = False  # defines if directory is temp, to delete it later.
-    
-    # this list should comprise all database specific functions that
-    # should be mined.
-    dataminers = []
-    
-    # also we use the date of each sample (datetime.date) and 
-    # a the tile size in metres (float)
-
+    '''
+    Class that enables to request multiple databases at the same time.
+    '''
     # constructor
-    def __init__(self, dataminers, directory=None, tile_size=100):
+    def __init__(self, dataminers, directory=None, tile_size=100, silent=True):
         self.tile_size = tile_size
-        self.root = set_directory(directory)
+        self.silent = silent
+        self.dataminers = []
+        self.root = set_directory(directory, database_name="")  # small trick to avoid making new dir
         if directory is None:
             self.temporary = True
             
@@ -50,6 +43,7 @@ class GetMultiDBData:
             real_dataminers = filter(is_spatialdata, new_dataminers)
             for dataminer in real_dataminers:
                 # standardize tile_size and dir in all dataminers
+                dataminer.silent = self.silent
                 dataminer.set_tile_size(self.tile_size)
                 dataminer.set_db_directory(self.root)
 
@@ -57,7 +51,7 @@ class GetMultiDBData:
         
         elif is_spatialdata(new_dataminers):
             new_dataminers.set_tile_size(self.tile_size)
-            new_dataminers.set_db_directory(self.root)
+            new_dataminers.set_db_directory(self.root, multi_db_access=True)
             self.dataminers.append(new_dataminers)
         
         else:

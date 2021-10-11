@@ -11,13 +11,18 @@ import rtree
 
 
 ## local imports ##
+from utils import coordinatify_point
 from utils import download_to_path
 from utils import make_csv_path
 from utils import retrieve_image_info
 from utils import set_directory
 from utils import write_csv_row
 from database_classes import SpatialData
+from database_classes import MetAssembler
+
 from image_manipulation import FileStitcher
+from source_destination import LocalSourceDest
+from source_destination import RemoteSourceDest
 
 
 ## the class ##
@@ -26,42 +31,48 @@ class NAIPData(SpatialData):
     # https://planetarycomputer.microsoft.com/dataset/naip#Blob-Storage-Notebook
     # Thanks a lot to the authors.
     from utils import set_directory
-
-    def __init__(self, features=[], source=None, tile_size=100,
-            directory=None, date_given=None, silent=False):
-        self.database = "NAIP western europe Azure"
-        self.base_url = "https://naipblobs.blob.core.windows.net/naip"
-        self.index_files = ["tile_index.dat", "tile_index.idx", "tiles.p"]
-
-        # option to load data from a local source
-        # implemented with keeping `self.base_url`, to allow different query
-        # architecture between local or online source
-        self.set_local_source(source)
-        
-        # set root and database dir
-        self.set_db_directory(directory)
+    
+    DATABASE = "NAIP western europe Azure"
+    
+    def __init__(self, features=[], tile_size=100, destination_path=None,
+                 remote_url=None, source_path=None, date_given=None,
+                 copy_local=True, extend_local_cache=False, silent=False):
+        # prepare database dependent informations.
+        self.load_remote_source_and_index()
         
         # print or no print?
         self.silent = silent
+
+        # set root and database dir
+        self.set_db_directory(destination_path)
+        
+        # change remote url if provided
+        self.set_remote_url(remote_url)
+        
+        # option to load data from a local source
+        # implemented with keeping `self.base_url`, to allow different query
+        # architecture between local cache or online source
+        self.set_source_dest(source_path=source_path, 
+                             remote_url=self.remote_url,
+                             copy_local=copy_local,
+                             extend_local_cache=extend_local_cache)
         
         # remember, if db index was already fetched
         self.prepared = False
 
         # define which datatypes should be fetched 
-        self.features = {"rgb": False, "ir": False}
-        for feature in features:
-            if feature.lower() in self.features.keys():
-                self.features[feature.lower()] = True
-            else:
-                raise RuntimeError(
-                        f"Attention: Expected feature `{feature}`"
-                        f" for database `{self.database}` was not found."
-                        f" Use one of those: {self.features.keys()}")
+        ## TODO should be loaded:
+        ## self.features = {"rgb": False, "ir": False}
+        self.set_features(features)
         
         # define tile metrics and init the stitcher.
         self.tile_size = tile_size
         self.tile_sizes_dict = {}
-        self.tile_stitcher = FileStitcher(tile_size, features)
+        self.tile_stitcher = FileStitcher(tile_size, features, silent=self.silent)
+        
+        # to avoid overwriting by multidb wrapper we flag if destination was 
+        # manually set by user.
+        self.user_defined = False if destination_path is None else True
 
         return
 
@@ -73,7 +84,7 @@ class NAIPData(SpatialData):
 
     def build_query(self, location, date=None):
         '''
-        Construct a query for NAIP database from coordinates and date
+        Load the relative paths of a tile in a given location NAIP database from coordinates and date.
         '''
         # the NAIP database used here can be accessed efficiently by first downloading
         # a tile index, which is used in a second step to retrieve the necessary tiles.
@@ -82,13 +93,26 @@ class NAIPData(SpatialData):
             self.prepare()
             self.prepared = True
         
-        ## copied but adjusted code BEGIN ##
         # get tiles with overlap
-        queries = _get_intersected_tiles(location, date,
+        rel_tile_paths = _get_intersected_tiles(location, date,
                 self.tile_rtree, self.tile_index)
-        return queries
+        return rel_tile_paths
+    
+    def get_local_src_dest_path(self, rel_tile_path):
+        '''
+        Obtain the relative path for a source data instance, how it should be located
+        in a local cache.
+        '''
+        return rel_tile_path
 
-
+    def get_remote_src_query(self, rel_tile_path):
+        '''
+        Obtain a query for a given remote source tile. 
+        '''
+        query_url = "/".join([self.datasource.url, rel_tile_path])
+        return query_url
+        
+        
     def get_data(self, queries, file_name, location, date_given):
         '''
         Download the data for the NAIP query.
@@ -96,39 +120,33 @@ class NAIPData(SpatialData):
         ry_tuple = _get_resolution_and_date(queries[0])  # TODO is this actually right to do?
         
         # first download the whole image (or load from local source)
-        raw_file_names = [os.path.join(self.database_dir, "source", query)
-                for query in queries]
-        query_urls = ["/".join([self.source, query]) for query in queries] 
-        
-        for rd_file, query_url in zip(raw_file_names, query_urls):
+        raw_file_names = []
+        for query in queries:
             try:
-                request_metainf = download_to_path(query_url, rd_file, 
-                        silent=self.silent, 
-                        local_path=(self.base_url != self.source))
-            except: # WHAT do i want to except? PermissionError? TODO 
+                dest_file_path, csv_row_dict = self.datasource.fetch_data(
+                    query, NaipMetCacheAssembler)
+
+            except PermissionError: # WHAT do i want to except? PermissionError? TODO 
                 print(f"Error, it was impossible to download data for the query"
-                        f" '{queries}' at location {location}.")
+                        f" `{query}` at location `{coordinatify_point(location)}`. No permission.")
             else:
-                try:  # we do not need to do that if file already exists - also we would have an error
-                    csv_row_dict = make_source_csv_row(query_url=query_url,
-                                    file_name=rd_file, meta_information_dict=request_metainf)
-                except:
-                    pass
-                else:
-                    write_csv_row(self.csv_index_files["source"], csv_row_dict)
+                # document the new data retrieved.
+                if csv_row_dict is not None:
+                    write_csv_row(self.csv_index_files["cache"], csv_row_dict)
+            raw_file_names.append(dest_file_path)
         try:
             image_manipulation = self.tile_stitcher.stitch_image(
                     location, raw_file_names, file_name_prefix=file_name)
-        except ValueError: # WHAT do i want to except TODO
-            print(f"Error, it was impossible to download data for the query"
-                    f" '{queries}' at location {location}.")
+        except ValueError as err: # WHAT do i want to except TODO
+            print(f"Error, it was impossible to stitch data for the queries"
+                    f" '{queries}' at location {coordinatify_point(location)}. {err}")
             image_manipulation = None
         else:
             # TODO
             for feature in self.features:
                 final_file_name = f"{file_name}.tif".replace(
                     "FEATURE_PLACE_HOLDER", feature)  # same as in image_manipulation.py
-                csv_row_dict = make_features_csv_row(
+                csv_row_dict = self.make_csv_row(NaipMetFeatureAssembler,
                     location=location, date_requested=date_given, tile_size=self.tile_size,
                     file_name=final_file_name, manipulation_dict=image_manipulation[final_file_name]
                 )
@@ -142,51 +160,53 @@ class NAIPData(SpatialData):
         Build NAIP database directory and download the index files if not already
         existent
         '''
-        URL_INDEX = "https://naipeuwest.blob.core.windows.net/naip-index/rtree"
-
         # initialize db directory including a `source` subdirectory
         # which is important if the directory will later be used as
         # local source.
         if not os.path.exists(self.database_dir):
-            print(f"The directory for database {self.database} will be"
+            print(f"The directory for database {self.DATABASE} will be"
                     " initialized.")
+
+        # initiate the cache directory if neccessary
+        set_directory(self.datasource.destination.cache_dir,
+                      database_name="")
 
         # subsequently we will collect filenames for csvs containing
         # metainformation of raw (source) data and the extracted 
         # feature specific data 
         self.csv_index_files = {}
 
-        # initiate the source directory (TODO we will not only need that
-        # one but also a way to use the local source dir...
-        set_directory(self.database_dir, database_name="source")
         # TODO test:
-        source_header_dict = make_source_csv_row()
-        self.csv_index_files["source"] = self.initialize_csvfile(
-               self.database_dir, source_header_dict,
-               database_feature="source")
+        source_header_dict = self.make_csv_row(NaipMetCacheAssembler)
+        self.csv_index_files["cache"] = self.initialize_csvfile(
+            source_header_dict, database_feature="cache")
 
         for feature in self.features:
-            if self.features[feature]:
-                set_directory(self.database_dir, database_name=feature)
-                feature_header_dict = make_features_csv_row()
-                self.csv_index_files[feature] = self.initialize_csvfile(
-                    self.database_dir, feature_header_dict,  # TODO adjust to source
-                    database_feature=feature)
+            set_directory(self.datasource.destination.destination_path,
+                          database_name=feature)
+            feature_header_dict = self.make_csv_row(NaipMetFeatureAssembler)
+            self.csv_index_files[feature] = self.initialize_csvfile(
+                feature_header_dict, database_feature=feature)
         
         # download tile indices which are 3 files as in self.index_files
-        tile_indices_root = os.path.join(self.database_dir, "index_files")
-        tile_indices_paths = {
-                os.path.join(tile_indices_root, file):
-                "/".join([URL_INDEX, file]) for file in self.index_files}
-        for i, (ti_path, ti_url) in enumerate(tile_indices_paths.items()):
-            download_to_path(ti_url, ti_path)
+        tile_indices_root = set_directory(
+            self.datasource.destination.destination_path,
+            database_name="index_files")
+
+        for rel_index_file_path in self.index_files:
+            index_file_path = os.path.join(tile_indices_root, rel_index_file_path)
+            # we do not update already existing indices! TODO DO WE????
+            if not os.path.exists(index_file_path):
+                download_to_path(
+                    "/".join([self.index_url, rel_index_file_path]),  # url
+                    index_file_path  # path 
+                )
         
         # load index_files (taken from #REF01)
         self.tile_rtree = rtree.index.Index(
-                os.path.join(tile_indices_root, "tile_index"))
+            os.path.join(tile_indices_root, "tile_index"))
         self.tile_index = pickle.load(
-                open([fl for fl in tile_indices_paths.keys()
-                    if "tiles.p" in fl][0], "rb"))
+            open(os.path.join(tile_indices_root, "tiles.p"), "rb"))
         
         # there are multiple years where data was obtained. also, there are
         # multiple resolutions. as all of the tiles should reflect the same
@@ -204,9 +224,9 @@ class NAIPData(SpatialData):
         #     for each resolution_year_tuple the first image in index order
         #     to calculate the numbers of pixels per tile (averaged between
         #     height and width).
-            for ryt in resolutions_and_years:
-                self.tile_sizes_dict[ryt] = _compute_tile_pixel(
-                        self.tile_size, self.tile_index, ryt, self.source)
+            self.tile_sizes_dict = _compute_tile_pixel_dict(
+                self.tile_size, self.tile_index, resolutions_and_years, self.datasource)
+
             if not self.silent:
                 print(f"A size of {self.tile_size} meters was chosen for each",
                         "tile dimension. For different resolutions and",
@@ -216,75 +236,16 @@ class NAIPData(SpatialData):
                     print(f"    - {y.year} ({r} cm): {size} px") 
         return
 
-    # TODO move to database_classes.py
-    def initialize_csvfile(self, source_path, header_dict, database_feature=None):
-        '''
-        Initialize a csv file that will serve as an index/meta_information
-        storage for data fetched.
-        '''
-        csv_file_name = os.path.join(
-            source_path,
-            database_feature,
-            f"index_{self.database.lower().replace(' ', '_')}_{database_feature}.csv"
-        )
-        write_csv_row(csv_file_name, header_dict)
-        return csv_file_name
-
 
     def make_file_name(self, index, total_number):
         '''
         Combine date and location to make a unique filename.
         '''
         today = str(date.today()).replace("-", "_")
-        padding = total_number//10 + 1
+        padding = total_number//10 + 2
         file_name = "/".join([self.database_dir, "FEATURE_PLACE_HOLDER",
             f"{today}_loc_{str(index+1).zfill(padding)}"])
         return file_name
-
-
-    def set_local_source(self, source_path):
-        '''
-        Set a local source for data extraction if neccessary files exists. 
-        '''
-        # TODO TEST IT!
-        if source_path is not None:
-            if (os.path.exists(source_path) and 
-                     os.path.exists(os.path.join(source_path, "source"))):
-                # approve local source if no index files are demanded.
-                if neccessary_index_files is None:
-                    self.source = os.path.join(source_path, "source")
-                    if not self.silent:
-                        print(f"Data source was set to the local path `{source_path}`.")
-                    return
-
-                # check the existence of neccesary index files (self.index_files).
-                # otherwise we do not trust the local source
-                else:
-                    index_files = [
-                            os.path.join(source_path,
-                                "index_files", index_filename) for
-                            index_filename in self.index_files]
-                    if all([os.path.exists(index_file) in index_files]):
-                        self.source = os.path.join(source_path, "source")
-                        if not self.silent:
-                            print("Provided local data source has all neccessary index files "
-                                    f"{', '.join(self.index_files)}. Thus, the data source was "
-                                    f"successfully set to the local path `{source_path}`.")
-                        return
-                    else:
-                        if not self.silent:
-                            print("Provided local data source does not have all of the neccessary index "
-                                    f"files: {', '.join(self.index_files)}.")
-
-            # source path not existing
-            else:
-                if not self.silent:
-                    print(f"The requested local source path `{source_path}` or its subdirectory "
-                            f"`{source_path}/source` do not exist.")
-
-        self.source = self.base_url
-        print(f"The default online source `{self.base_url}` "
-            "will be used instead.")
 ## end class ##
 
 
@@ -308,7 +269,7 @@ def _get_resolution_and_date(query):
 
 # obtain the tile filenames that fit a given location to best date
 def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
-        strict_date=False, no_date_filter=False):
+                           strict_date=False, no_date_filter=False):
     '''
     Look up tile file name(s) that intersect with a given point.
     These can be even selected for a given year (or best year before it).
@@ -363,29 +324,39 @@ def _get_intersected_tiles(point, date_preferred, tile_rtree, tile_index,
 # obtain tile size in pixels for a resolution_year_tuple.
 # the first image in the index, sharing this tuple is
 # used for the estimation
-def _compute_tile_pixel(tile_size, tile_index, resolution_year_tuple,
-        source_base):
+def _compute_tile_pixel_dict(tile_size, tile_index, resolution_year_tuple_list,
+        data_source):
     '''
-    Compute the tile size in pixels for a given resolution
-    and year.
+    Compute the tile size in pixels for all tuples of resolution and year.
     '''
-    import numpy as np
-
     # we extract name and geom of the first image that is in given
     # resolution from given year. this is standardized, as index 
     # is ordered (as long as the index of the database does not 
     # change - who knows?...)
+    tile_sizes_dict = {ryt: None for ryt in resolution_year_tuple_list}
+
     for i in tile_index:
-        if _get_resolution_and_date(
-                tile_index[i][0]) == resolution_year_tuple:
-            index_first_ryt = i
+        ryt = _get_resolution_and_date(tile_index[i][0]) 
+        # always run it for the first given tile providing an ryt
+        if tile_sizes_dict[ryt] is None:
+            tile_sizes_dict[ryt] = _compute_tile_pixel(
+                tile_size, tile_index, i, data_source)
+        if all([tv is not None for tv in tile_sizes_dict.values()]):
             break
 
-    tile_query = tile_index[index_first_ryt][0]
-    tile_geom = tile_index[index_first_ryt][1]
-    
+    return tile_sizes_dict
+
+
+def _compute_tile_pixel(tile_size, tile_index, first_tile_index, datasource):
+    '''
+    Compute the tile size in pixel for a file given its index.
+    '''
+    tile_query = tile_index[first_tile_index][0]
+    tile_geom = tile_index[first_tile_index][1]
+
     # we compute physical and pixel width and height
-    tile_query_url = _make_query_url(tile_query, source_base)
+    tile_query_url = datasource.fetch_data(
+        tile_query, NaipMetCacheAssembler, dry_run=True)
     dim_pixel = np.array(_fetch_image_dimensions(tile_query_url))
     dim_metric = np.array(_fetch_geom_dimensions(tile_geom))
 
@@ -439,84 +410,44 @@ def _fetch_geom_dimensions(geom_rectangle):
     return (metric_height, metric_width)
 
 
-# helper to make dictionary with metainfo for
-# raw source data.
-def make_source_csv_row(query_url=None, file_name=None,
-        meta_information_dict=None):
+class NaipMetFeatureAssembler(MetAssembler):
     '''
-    Make dictionary sharing metainf about raw data that
-    should be stored in the source index csv file.
-
-    The meta_information_dict resembles the header of
-    a http request.
+    Class to assemble csv row including feature specific metadata
+    for the extracted tiles.
     '''
-    SOURCE_HEADER = [
-        "query_url",  # url of the single query
-        "local_path",  # absolute path where file is stored locally
-        "timestamp_server",  # timestamp of last mod on server
-        "timestamp_fetched",  # timestamp of when file was downloaded
-        "server",  # name of the server
-        "file_type",  # format/type of the file
-        "file_size"  # size of the file in bytes
+    HEADER = [
+            "location",  # coordinates of the request
+            "date_requested",  # date which was requested
+            "date_obtained",  # date of image capture (could be list)
+            "tilesize",  # metric edgelength of tile
+            "file_path",  # absolute path of the file
+            "manipulation",  # information about processing of raw file(s)
+            "completeness",  # tells if complete tile was retrieved
+            "source",  # path(s)/url(s) of raw data used to obtain file
+            "timestamp_create",  # timestamp of when file was created
+            "file_type",  # format/type of the file
+            "file_size",  # size of the file in bytes
+            "image_size",  # size of image in pixels
+            "image_mode"  # information about the image profile
     ]
-    if query_url is not None:
-        csv_row = [  # same order as @SOURCE_HEADER
-            query_url,  # query_url
-            file_name,  # local_path
-            str(parser.parse(
-                meta_information_dict["Last-Modified"])),  # timestamp_server
-            str(parser.parse(
-                meta_information_dict["Date"])),  # timestamp_fetched
-            meta_information_dict["Server"],  # server
-            meta_information_dict["Content-Type"],  # file_type
-            meta_information_dict["Content-Length"]  # file_size
-            ]
-    # we can also make empty header dicts
-    else:
-        csv_row = [None] * len(SOURCE_HEADER)
-
-    csv_row_dict = {hd: rw for hd, rw in
-            zip(SOURCE_HEADER, csv_row)}
-    return csv_row_dict
-
-
-def make_features_csv_row(location=None, date_requested=None, tile_size=None,
-                          file_name=None, manipulation_dict=None):
-    '''
-    Make dictionary sharing metainf about the processed data
-    of a given feature + database.
-
-    The information should be stored in the feature specific
-    index csv file.
-    '''
-    import re
-
-    FEATURE_HEADER = [
-        "location",  # coordinates of the request
-        "date_requested",  # date which was requested
-        "date_obtained",  # date of image capture (could be list)
-        "tilesize",  # metric edgelength of tile
-        "file_path",  # absolute path of the file
-        "manipulation",  # information about processing of raw file(s)
-        "completeness",  # tells if complete tile was retrieved
-        "source",  # path(s)/url(s) of raw data used to obtain file
-        "timestamp_create",  # timestamp of when file was created
-        "file_type",  # format/type of the file
-        "file_size",  # size of the file in bytes
-        "image_size",  # size of image in pixels
-        "image_mode"  # information about the image profile
-    ]
-    REGEX = "[a-zA-Z]_[0-9]*_[a-zA-Z]{2}_[0-9]*_[0-9]{3}_[0-9]*"
     
-    if manipulation_dict is not None:
+    def build_row(location=None, date_requested=None, tile_size=None,
+                  file_name=None, manipulation_dict=None):
+        '''
+        Build the feature specific row for a tile.
+        '''
+        import re
+
+        REGEX = "[a-zA-Z]_[0-9]*_[a-zA-Z]{2}_[0-9]*_[0-9]{3}_[0-9]*"
         # dates of image capture are obtained from raw file names 
         raw_files = manipulation_dict["source_file"]
         substr_obtained = map(lambda x: x.split("_")[-1], re.findall(REGEX, raw_files))
         dates_obtained = map(lambda x: parser.parse(x).date(), substr_obtained)
         datestr_obtained =  "|".join([str(d) for d in dates_obtained])
         image_info_dict = retrieve_image_info(file_name) 
-        csv_row = [  # same order as @FEATURE_HEADER
-            location,  # location
+
+        csv_row = [  # same order as self.HEADER
+            coordinatify_point(location),  # location
             str(date_requested),  # date_requested
             datestr_obtained,  # date_obtained
             tile_size,  # tilesize
@@ -529,11 +460,37 @@ def make_features_csv_row(location=None, date_requested=None, tile_size=None,
             image_info_dict["file_size"],  # file_size
             image_info_dict["pixel_size"],  # image_size
             image_info_dict["mode"]  # image_mode
-            ]
-    # we can also make empty header dicts
-    else:
-        csv_row = [None] * len(FEATURE_HEADER)
-
-    csv_row_dict = {hd: rw for hd, rw in
-            zip(FEATURE_HEADER, csv_row)}
-    return csv_row_dict
+        ]
+        return csv_row
+    
+    
+class NaipMetCacheAssembler(MetAssembler):
+    '''
+    Class to assemble csv row including source file metadata.
+    '''
+    HEADER = [
+            "query_url",  # url of the single query
+            "local_path",  # absolute path where file is stored locally
+            "timestamp_server",  # timestamp of last mod on server
+            "timestamp_fetched",  # timestamp of when file was downloaded
+            "server",  # name of the server
+            "file_type",  # format/type of the file
+            "file_size"  # size of the file in bytes
+    ]
+    
+    def build_row(query_url=None, file_name=None, meta_information_dict=None):
+        '''
+        Build the source specific row for a cache file.
+        '''
+        csv_row = [  # same order as self.HEADER
+                query_url,  # query_url
+                file_name,  # local_path
+                str(parser.parse(
+                    meta_information_dict["Last-Modified"])),  # timestamp_server
+                str(parser.parse(
+                    meta_information_dict["Date"])),  # timestamp_fetched
+                meta_information_dict["Server"],  # server
+                meta_information_dict["Content-Type"],  # file_type
+                meta_information_dict["Content-Length"]  # file_size
+        ]
+        return csv_row
