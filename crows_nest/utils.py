@@ -29,7 +29,7 @@ def set_directory(directory=None, database_name="data_barrel"):
 
     root = os.path.join(
             tempfile.gettempdir() if directory is None else directory,
-            database_name)
+            database_name if database_name is not None else "")
     if not os.path.exists(root):
         os.makedirs(root)
         print(f"{'Temporal d' if directory is None else 'D'}irectory {root} was created.")
@@ -64,31 +64,32 @@ def download_to_path(url, file_path,
             try:
                 copy2(url, file_path)
             except:
-                print(f"It was not possible to load {url} from local source."
-                        if not silent else "", end="")
+                if not silent : print(
+                    f"It was not possible to load {url} from local source.")
             else:
-                print(f"Local data from {url} was loaded into {file_path}.\n"
-                        if not silent else "", end="")
+                if not silent : print(
+                    f"Local data from {url} was loaded into {file_path}.")
         else:
         # TODO end
             try:
                 fp, headers = urllib.request.urlretrieve(url, file_path)
             except (HTTPError, URLError) as err:
-                print(f"The download of {url} failed with {err}")
+                if not silent : print(
+                    f"The download of {url} failed with {err}.")
             else:
-                print(f"Data from {url} was retrieved to {file_path}.\n"
-                        if not silent else "", end="")
+                if not silent : print(
+                    f"Data from {url} was retrieved to {file_path}.")
             return headers
     else:
-        print(f"{file_path} already exists. It will not be "
-            "overwritten.\n" if not silent else "", end="")
+        if not silent : print(
+            f"{file_path} already exists. It will not be overwritten.")
         return None
 
 
 # helper to check if dates and locations list is of equal
 # length. Also checks if dates are given at all.
 # otherwise todays date will be used for all.
-def check_locations_and_dates(locations, dates):
+def check_locations_and_dates(locations, dates, silent=True):
     '''
     Load dates to datetime object and assert that there is
     the same amount of locations and dates given.
@@ -105,8 +106,8 @@ def check_locations_and_dates(locations, dates):
         dates = [d if type(d) == date else date(d) for d in dates]
     else:
         dates = [date.today()] * len(locations)
-        print("As no dates were specified the most recent data will"
-                " be fetched.")
+        if not silent : print(
+            "As no dates were specified the most recent data will be fetched.")
     return dates
 
 
@@ -194,6 +195,26 @@ def coordinatify_point(shapely_point):
     '''
     coordinate_point = f"{shapely_point.y}°N, {shapely_point.x}°E"
     return coordinate_point
+
+
+def set_gdal_environments(silent=True):
+    '''
+    Optimize operating system environmental variables to work with 
+    clound optimized geotifs.
+    
+    these settings are copy-pasted from 
+    https://github.com/pangeo-data/cog-best-practices/blob/main/0-single-cog.ipynb
+    '''
+    os.environ['GDAL_DISABLE_READDIR_ON_OPEN']='EMPTY_DIR' # This is KEY! otherwise we send a bunch of HTTP GET requests to test for common sidecar metadata
+    os.environ['AWS_NO_SIGN_REQUEST']='YES' # Since this is a public bucket, we don't need authentication
+    os.environ['GDAL_MAX_RAW_BLOCK_CACHE_SIZE']='900000000'  # 900MB: Want this to be greater than size of uncompressed raster to overcome a 10 MB limit in the GeoTIFF driver for range request merging.
+    os.environ['GDAL_SWATH_SIZE']='900000000'  # also increase this if increasing MAX_RAW_BLOCK_CACHE_SIZE
+    os.environ['VSI_CURL_CACHE_SIZE']='900000000' # also increase this if increasing MAX_RAW_BLOCK_CACHE_SIZE
+    if not silent : print(
+        "We adjusted environmental variables for geotif downloads as recommended by "
+        "https://github.com/pangeo-data/cog-best-practices/blob/main/0-single-cog.ipynb .")
+    return
+    
 
 # HELPERS:
 # get properties of given image if possible.
