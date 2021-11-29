@@ -1,0 +1,42 @@
+description: "crows nest catalog"
+
+metadata:
+    version: 1
+
+sources:
+    naip_western_europe_azure:
+        description:
+            The [National Agriculture Imagery Program](https://www.fsa.usda.gov/programs-and-services/aerial-photography/imagery-programs/naip-imagery/) (NAIP) provides US-wide, high-resolution aerial imagery, with four spectral bands (R, G, B, IR). NAIP is administered by the [Aerial Field Photography Office](https://www.fsa.usda.gov/programs-and-services/aerial-photography/) (AFPO) within the [US Department of Agriculture](https://www.usda.gov/) (USDA). Data are captured at least once every three years for each state. This dataset represents NAIP data from 2010-present, in [cloud-optimized GeoTIFF](https://www.cogeo.org/) format.\n
+        metadata:
+            url: https://planetarycomputer.microsoft.com/dataset/naip#Storage-Documentation
+            index_url: https://naipeuwest.blob.core.windows.net/naip-index/rtree
+            index_files: 
+                - tile_index.dat
+                - tile_index.idx
+                - tiles.p
+            features:
+                - rgb
+                - ir
+            tags:
+                - rgb
+                - ir
+                - NAIP
+                - Aerial
+                - Imagery
+                - USDA
+                - AFPO
+                - Agriculture
+                - United States
+        parameters:
+            filename: 
+                description: Relative URL path of the file that should be retrieved.
+                type: str
+                default: v002/fl/2019/fl_60cm_2019/28080/m_2808060_sw_17_060_20191215.tif
+            path_base:
+                description: Base of the URL / local db source.
+                type: str
+                default: "https://naipblobs.blob.core.windows.net/naip"
+        driver: rasterio
+        args:
+            urlpath: "{{ path_base }}/{{ filename }}"
+            chunks: {'x': 1000, 'y': 1000}  # TODO: adjust
