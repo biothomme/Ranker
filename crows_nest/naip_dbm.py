@@ -21,8 +21,8 @@ from database_classes import SpatialData
 from database_classes import MetAssembler
 
 from image_manipulation import FileStitcher
-from source_destination import LocalSourceDest
-from source_destination import RemoteSourceDest
+from reader import LocalReader
+from reader import RemoteReader
 
 
 ## the class ##
@@ -52,7 +52,7 @@ class NAIPData(SpatialData):
         # option to load data from a local source
         # implemented with keeping `self.base_url`, to allow different query
         # architecture between local cache or online source
-        self.set_source_dest(source_path=source_path, 
+        self.set_reader(source_path=source_path, 
                              remote_url=self.remote_url,
                              copy_local=copy_local,
                              extend_local_cache=extend_local_cache)
@@ -103,7 +103,8 @@ class NAIPData(SpatialData):
         Obtain the relative path for a source data instance, how it should be located
         in a local cache.
         '''
-        return rel_tile_path
+        tile_path = os.path.join(self.datasource.cache_dir, rel_tile_path)
+        return tile_path
 
     def get_remote_src_query(self, rel_tile_path):
         '''
@@ -176,11 +177,12 @@ class NAIPData(SpatialData):
         # feature specific data 
         self.csv_index_files = {}
 
-        # TODO test:
+        # make first line in csv_file
         source_header_dict = self.make_csv_row(NaipMetCacheAssembler)
         self.csv_index_files["cache"] = self.initialize_csvfile(
             source_header_dict, database_feature="cache")
 
+        # initialize aa directory for each feature
         for feature in self.features:
             set_directory(self.datasource.destination.destination_path,
                           database_name=feature)
@@ -227,11 +229,11 @@ class NAIPData(SpatialData):
             self.tile_sizes_dict = _compute_tile_pixel_dict(
                 self.tile_size, self.tile_index, resolutions_and_years, self.datasource)
 
-            if not self.silent:
-                print(f"A size of {self.tile_size} meters was chosen for each",
-                        "tile dimension. For different resolutions and",
-                        "years, this corresponds to the following sizes",
-                        "in pixels:")
+            if not self.silent : print(
+                f"INFO: A size of {self.tile_size} meters was chosen for each "
+                "tile dimension. For different resolutions and "
+                "years, this corresponds to the following sizes "
+                "in pixels:")
                 for ((r, y), size) in self.tile_sizes_dict.items():
                     print(f"    - {y.year} ({r} cm): {size} px") 
         return
