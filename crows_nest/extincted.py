@@ -163,3 +163,12 @@ def fetch_best_tile(location, tile_size_pixels, rawdata_path,
                             f" {location} was successfully downloaded to"
                             f" {file_name}.\n" if not silent else "", end="")
     return
+
+
+# build the mature url for query
+def _make_query_url(query, source_base):
+    '''
+    Add database url to a given tile specific query.
+    '''
+    query_url = "/".join([source_base, query])
+    return query_url
