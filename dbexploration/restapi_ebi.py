@@ -109,6 +109,7 @@ def run_on_mgrast(file_name, total=False):
             obj = json.loads(content)
             for sample in obj["data"]:
                 i += 1
+                print(sample)
                 row = dict(zip(FIELDNAMES+["env_package_type"],
                     [sample["id"],
                      sample["name"],
